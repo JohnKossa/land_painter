@@ -17,7 +17,7 @@ The application is built to run **fully offline**: no network access is required
 | Language | Python 3.14+ | Map front-end requires a small amount of JavaScript |
 | GUI shell | PySide6 (Qt) | Native widgets for upload/reconciliation, sales pane, land table editor, ratio banner. Large tables via `QTableView` + custom model |
 | Map rendering | deck.gl in `QWebEngineView` | GPU rendering of hundreds of thousands of polygons; neighborhood coloring via per-parcel attribute buffers |
-| Bulk Python ↔ map transfer | Arrow IPC via a custom `QWebEngineUrlSchemeHandler` | Geometry is sent to the map once; subsequent updates send only small typed arrays (e.g. neighborhood ID per parcel) |
+| Bulk Python ↔ map transfer | Raw typed binary buffers (the layout deck.gl consumes directly) via a custom `QWebEngineUrlSchemeHandler` | Geometry is sent to the map once; subsequent updates send only small typed arrays (e.g. neighborhood ID per parcel) |
 | Python ↔ map events | `QWebChannel` | Small messages only: clicks, lasso polygons, selection events |
 | Geometry I/O | pyogrio + GeoPandas | Shapefile, GeoPackage, GeoParquet, etc. |
 | Spatial operations | Shapely 2 (`STRtree`) | Lasso polygon → intersecting parcel keys |
