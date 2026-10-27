@@ -81,11 +81,19 @@ Additional data can be added to a session after the initial upload, though this 
 
 ## Data Reconciliation
 
+The application must not hard-code assumptions about the shape of the input data (column names, which flag marks a vacant sale, which cost columns to use, etc.). Uploaded data varies between jurisdictions; the user reviews it after upload and tells the application what each column means. Reference sample data (Guilford County) is a fair example of what to expect, not a fixed schema.
+
+* A single file may fill several roles (e.g. one "universe" file supplying parcel geometry, characteristics, and cost values).
+* The user maps columns to roles: parcel key, geometry, sale price (time-adjusted), sale date, vacant/improved indicator, replacement cost, depreciated cost, and each unit of measure. Where a role could reasonably combine several columns (e.g. building cost plus outbuilding cost), the user decides.
+* The application may *suggest* mappings (e.g. by column name), but the user confirms them.
+* The review shows summary statistics for mapped columns and flags suspect values for the user to decide on, rather than silently fixing them: keys that don't match across files, zero or negative values in unit-of-measure columns, implausible outliers or sentinel values, and nulls.
+
 After upload, the application parses the files and lets the user reconcile the data:
 * Select the data type for any column whose type is ambiguous
 * Option to fill null or empty values
 * Map a source column to each potential unit of measure (area, road frontage, lake frontage, river frontage, etc.)
 * Parcel keys with no matching geometry are flagged to the user; processing continues without them
+* Optionally choose an existing neighborhood column to import as starting neighborhoods (see Neighborhood Import)
 
 ## Land table parts
 Unit of measure (area, road frontage, lake frontage, river frontage, etc., or lot). A land table uses a **single** unit of measure (multi-unit tables are out of scope for now). Unit-of-measure quantities come from the columns mapped during reconciliation. Lot is not supplied as data: every parcel is assumed to be exactly 1 lot.
@@ -105,6 +113,8 @@ So for a parcel: `land value = (units × rate) × Π(multipliers) + Σ(additions
 
 When a sub-neighborhood is created, it receives a **copy** of its parent's land table at that moment. After creation, parent and child are independent: changes to either do not propagate to the other. This divergence is intended.
 
+An **"Apply land table to all children"** action copies a neighborhood's current land table to all of its direct children, replacing theirs. It is a single undoable action. This is how a parent's table is pushed to many neighborhoods at once (e.g. after an import).
+
 ## Neighborhood Management
 
 Neighborhood identifiers are **strings**. New neighborhoods may be given generated IDs, but users are expected to rename them.
@@ -113,10 +123,29 @@ There is **no depth limit** on neighborhood nesting.
 
 Lasso selection applies only to parcels within the **currently selected** neighborhood. Lassoing inside a sub-neighborhood therefore creates a child of that sub-neighborhood. Parcels touched by the lasso that belong to any other neighborhood (siblings, ancestors, or the selected neighborhood's existing children) are silently ignored and stay where they are.
 
+**Reassign lasso** (Ctrl+Shift+drag): moves every parcel the lasso touches, from **any** neighborhood, into the currently selected neighborhood. No new neighborhood is created. Moved parcels are valued with the selected neighborhood's land table. This is how boundaries between sibling neighborhoods are adjusted. If a reassign would leave any neighborhood with no parcels, a confirmation pop-up names the neighborhood(s) that would be emptied, before anything changes:
+* **Confirm:** the transfer happens and the emptied neighborhood(s) are deleted, all as one undoable action.
+* **Cancel:** the transfer does not happen; nothing changes.
+
 Neighborhoods can be renamed or deleted. On delete:
 1. The user is prompted to choose a recipient neighborhood from a dropdown of all neighborhoods **adjacent** to the one being deleted.
 2. All parcels of the deleted neighborhood move to the recipient, so no parcels are orphaned.
 3. The moved parcels are valued with the recipient neighborhood's land table.
+4. Child neighborhoods of the deleted neighborhood move up to its parent.
+
+Implementation notes:
+* **Adjacent** means having parcels within ~50 m (0.0005°) of the neighborhood's parcels, so neighborhoods separated only by a road count as adjacent. Choices are ordered by how many nearby parcels they share (closest first); the parent is always offered as a fallback, even if not adjacent. "Everything" cannot be deleted.
+* For the reassign lasso, a neighborhood counts as **emptied** when it has no parcels left and no child neighborhoods. "Everything" is never deleted.
+* Deleted neighborhoods are kept internally (hidden) so undo and the session journal stay consistent.
+
+## Neighborhood Import
+
+Existing neighborhood assignments can be imported from a column in the parcel or characteristics data. The import can be chosen during upload or run later from a menu.
+* Each distinct value in the column becomes a child neighborhood of "Everything", named by that value.
+* Parcels with a null or empty value stay in "Everything".
+* Imported neighborhoods copy the parent's land table at the moment of import, following the normal inheritance rule. If "Everything" has no land table yet, they start without one; use "Apply land table to all children" to seed them.
+* Imported neighborhoods behave exactly like drawn ones: they can be renamed, deleted, subdivided by lasso, and adjusted with the reassign lasso. They may be non-contiguous.
+* The import is a single undoable action. The journal stores the resulting assignment, so replay does not depend on the source column.
 
 ## Evidence
 Implied range of land values per UOM from vacant sales
@@ -168,20 +197,37 @@ Future: users will be able to edit a depreciation schedule, applied to replaceme
 
 Spread of land values in the region is measured by **COD**.
 
+### Metric details (as implemented — confirm or adjust)
+* **Scope:** a neighborhood's metrics use the parcels directly in it (the parcels its land table values) and the sales on those parcels. The always-visible banner uses all vacant sales county-wide.
+* **Sales used:** not disqualified, with a positive price and a known vacant/improved value. The ratio study additionally needs the parcel to have a land value.
+* **PRB:** IAAO regression of (ratio − median) / median on log₂ of the value proxy ½·price + ½·(land value / median ratio).
+* **Spread:** COD of land value per unit (the land table's unit) across the neighborhood's parcels with a land value and positive units.
+* **Allocation ratios** are reported as the median across built parcels (depreciated cost > 0), or across improved sales for the sale-based ratio. The vacant-sales version uses the **mean** vacant sale price per unit (the spec's "average").
+* **Land value in excess of sale price:** count of usable sales (vacant and improved) whose parcel's land value exceeds the sale price.
+* **Evidence** ranges are shown for every unit of measure, so the best unit can be compared. Cost residual and sale-based allocation evidence are one row, since they are the same quantity.
+* **Highlighting:** ratio statistics outside IAAO ranges are highlighted: median 0.90–1.10, COD ≤ 25 (vacant land), PRD 0.98–1.03, PRB −0.05 to 0.05.
+* While a land table is being edited, the draft's ratio study is previewed before it is applied.
+
 The UI displays **"Undefined"** in place of a metric score only when the metric is mathematically impossible to compute because there are too few sales (e.g. no sales at all, or a statistic that requires at least two observations). There is no minimum sample size beyond that: a metric computed from very few sales is still shown.
 
 ## Interface
 User should be presented with a screen before the map in which they upload their parcel geometry and CSVs of their vacant sales, improved sales, characteristics, cost values, and any other relevant data. The application should parse the files and allow the user to perform reconciliation of their data (see Data Reconciliation).
 
 User should have a pane for vacant sales that allows them to flag "known good" sales and "disqualified" sales. These will affect the metrics supplied to the user.
+* The pane shows vacant sales by default and can switch to improved or all sales; it can also filter by flag and to the selected neighborhood (including its sub-neighborhoods).
+* Columns include each mapped unit of measure and, for vacant sales, price per unit, to help spot outliers.
+* Flags apply to all selected rows (buttons, context menu, or keys G / U / D). Each flag change is one undoable action.
+* Shown sales appear as dots on the map, colored by flag. Selecting a sale outlines its parcel; double-clicking flies the map to it; clicking a dot selects its row.
 
 Map should treat everything initially as a single neighborhood and allow the user to create sub-neighborhoods. The user should be able to click on a neighborhood to see the land table and metrics for that neighborhood.
 
 Map panel should have an unobtrusive but always-present current land ratio study results somewhere near the top of the window.
 
 User should be able to click a neighborhood and have a pop-up that allows them to edit the land table for that neighborhood and also presents the metrics, tests, and evidence at a glance.
+* The pop-up is a floating window that opens beside the click and follows later clicks; it can be docked into the main window. Opening on click can be turned off (View menu).
+* It shows the neighborhood's name with Rename and Delete, the land table editor (with a searchable neighborhood picker), and the metrics and evidence side by side.
 
-User should be able to shift click and drag to lasso parcels within the currently selected neighborhood to form a new sub-neighborhood. Neighborhood splits are done by parcel lasso: any parcel the lasso touches or crosses becomes part of the new neighborhood (parcels are never split).
+User should be able to shift click and drag to lasso parcels within the currently selected neighborhood to form a new sub-neighborhood, and ctrl+shift click and drag to reassign lassoed parcels from any neighborhood into the selected one. Neighborhood splits are done by parcel lasso: any parcel the lasso touches or crosses becomes part of the new neighborhood (parcels are never split).
 
 ## Sessions & Undo
 
@@ -189,9 +235,21 @@ Sessions can be saved and reopened.
 
 User actions (boundary changes, land table edits, sale flags, reconciliation choices, etc.) are journaled, allowing them to be undone.
 
+* The session file (`.lpsession`) is a SQLite database holding the action journal and references to the input files; inputs are not copied into it. Opening a session reloads the inputs and replays the journal.
+* A fingerprint of the parcel keys is stored; opening a session against a different or modified parcel file is refused. Likewise for the sales (key, price, date of every sale), since sale flags are tied to specific sales. If an input file has moved, the app looks beside the session file, then asks the user to locate it.
+* A new session is unsaved until "Save As". After that, every action is written to the file as it happens.
+* Undo/redo is linear: a new action after an undo discards the redo history. Undo history survives closing and reopening the session.
+
 ## Export
 
 Export to **Parquet or CSV**: parcel-level data with the neighborhood assignment tagged onto each parcel, along with the land tables.
+
+File → Export writes three files side by side (same format):
+* `<name>`: one row per parcel: key, neighborhood, neighborhood path (e.g. `Everything / North / Lake`), unit of measure, units, rate, base value, combined multiplier, combined addition, land value (`base × multiplier + addition`). Parcels without a land value have empty values.
+* `<name>_land_tables`: one row per neighborhood (deleted ones excluded): neighborhood, path, parent, parcel count, unit of measure, rate model, rate, number of adjustments. Neighborhoods without a land table have an empty rate.
+* `<name>_adjustments`: one row per adjustment: neighborhood, order, name, field and its source file, operator, value or values (`|`-separated), readable condition, effect (multiply/add), amount.
+
+Only applied land tables are exported; the user is warned about unapplied edits. CSV text values are quoted so keys keep leading zeros.
 
 ## Intended Workflow
 1. User uploads parcel geometry and CSVs of vacant sales, improved sales, characteristics, and cost values

@@ -16,7 +16,7 @@ _spec.loader.exec_module(synthetic)
 
 @pytest.fixture(scope="module")
 def layer():
-    return build_layer(synthetic.make_parcels(100))  # 10 x 10 grid
+    return build_layer(synthetic.make_parcels(100), "key")  # 10 x 10 grid
 
 
 def test_buffers_are_consistent(layer):
@@ -26,6 +26,31 @@ def test_buffers_are_consistent(layer):
     assert np.all(np.diff(layer.starts) == 9)  # 8 vertices + closing vertex
     minx, miny, maxx, maxy = layer.bounds
     assert -82.5 < minx < maxx < -81.5 and 26 < miny < maxy < 27  # reprojected to lng/lat
+
+
+def _triangle_areas(layer):
+    xy = layer.positions.reshape(-1, 2)
+    tri = xy[layer.indices.reshape(-1, 3)]
+    a, b = tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
+    return 0.5 * np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+
+
+def test_triangles_cover_each_part(layer):
+    assert _triangle_areas(layer).sum() == pytest.approx(sum(p.area for p in layer.parts), rel=1e-9)
+
+
+def test_holes_are_kept_and_not_filled():
+    import geopandas as gpd
+    import shapely
+
+    donut = shapely.Polygon([(0, 0), (10, 0), (10, 10), (0, 10)], [[(3, 3), (3, 7), (7, 7), (7, 3)]])
+    inner = shapely.box(3, 3, 7, 7)
+    layer = build_layer(gpd.GeoDataFrame({"key": ["d", "i"]}, geometry=[donut, inner], crs="EPSG:4326"), "key")
+    assert len(layer.ring_starts) - 1 == 3  # donut exterior + hole, inner exterior
+    areas = _triangle_areas(layer)
+    owner = np.searchsorted(layer.starts, layer.indices.reshape(-1, 3)[:, 0], side="right") - 1
+    assert areas[owner == 0].sum() == pytest.approx(84)  # 100 - 16: the hole is not filled
+    assert areas[owner == 1].sum() == pytest.approx(16)
 
 
 def test_rings_are_counter_clockwise(layer):
@@ -58,19 +83,17 @@ def test_self_intersecting_lasso_does_not_fail(layer):
     assert len(layer.query_polygon(bowtie)) > 0
 
 
-def test_create_child_only_takes_parcels_from_parent():
-    model = NeighborhoodModel(10)
-    a = model.create_child(ROOT, np.array([0, 1, 2, 3]))
-    b = model.create_child(ROOT, np.array([3, 4, 5]))  # 3 already belongs to a
-    assert model.assignment.tolist() == [a, a, a, a, b, b, 0, 0, 0, 0]
-
-    grandchild = model.create_child(a, np.array([1, 2, 4, 6]))  # 4 is b's, 6 is root's
-    assert model.assignment.tolist() == [a, grandchild, grandchild, a, b, b, 0, 0, 0, 0]
-    assert model.neighborhoods[grandchild].parent == a
+def test_members_of_filters_to_one_neighborhood():
+    model = NeighborhoodModel(6)
+    a = model.add_child(ROOT, np.array([0, 1, 2]), "A")
+    assert model.members_of(ROOT, np.arange(6)).tolist() == [3, 4, 5]
+    assert model.members_of(a, np.array([1, 4])).tolist() == [1]
 
 
-def test_create_child_with_no_qualifying_parcels_is_noop():
-    model = NeighborhoodModel(5)
-    a = model.create_child(ROOT, np.array([0, 1]))
-    assert model.create_child(a, np.array([2, 3])) is None
+def test_remove_last_returns_parcels_to_parent():
+    model = NeighborhoodModel(6)
+    a = model.add_child(ROOT, np.array([0, 1, 2]), "A")
+    model.add_child(a, np.array([1]), "B")
+    model.remove_last(np.array([1]))
+    assert model.assignment.tolist() == [a, a, a, 0, 0, 0]
     assert len(model.neighborhoods) == 2

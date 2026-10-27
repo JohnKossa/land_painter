@@ -17,11 +17,15 @@ class MapBridge(QObject):
     # Python -> JS
     assignmentChanged = Signal(int, str)  # version, neighborhood palette JSON
     selectionChanged = Signal(int)  # selected neighborhood index
+    salesChanged = Signal(int)  # version; the map re-fetches sale points and colors
+    highlightRings = Signal(str)  # JSON list of [start, end) vertex ranges to outline; "[]" clears
+    flyTo = Signal(float, float, float)  # longitude, latitude, zoom
 
     # JS -> Python (re-emitted from slots so Python code can connect normally)
     ready = Signal()
     partClicked = Signal(int)
-    lassoDrawn = Signal(object)  # list of [lng, lat]
+    saleClicked = Signal(int)  # index into the currently shown sale points
+    lassoDrawn = Signal(object, str)  # list of [lng, lat], mode ("create" or "reassign")
     timingReported = Signal(str, float)
 
     @Slot()
@@ -32,9 +36,13 @@ class MapBridge(QObject):
     def clickPart(self, part: int):
         self.partClicked.emit(part)
 
-    @Slot(str)
-    def lasso(self, coords_json: str):
-        self.lassoDrawn.emit(json.loads(coords_json))
+    @Slot(int)
+    def clickSale(self, index: int):
+        self.saleClicked.emit(index)
+
+    @Slot(str, str)
+    def lasso(self, coords_json: str, mode: str):
+        self.lassoDrawn.emit(json.loads(coords_json), mode)
 
     @Slot(str, float)
     def reportTiming(self, name: str, ms: float):
