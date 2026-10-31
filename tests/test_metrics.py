@@ -5,7 +5,9 @@ from land_painter.data.config import ROLE_SALES, ColumnRef, FileSpec, SalesMappi
 from land_painter.data.dataset import build_dataset
 from land_painter.data.sources import inspect
 from land_painter.land_table import LOT, FlatRate, LandTable
-from land_painter.metrics import compute, cod, cov, over_price_sales, ratio_study, value_range
+from land_painter.metrics import (
+    compute, cod, cov, over_price_sales, per_unit_land_evidence, ratio_study, value_range,
+)
 from land_painter.neighborhoods import ROOT
 from land_painter.sales import DISQUALIFIED
 from land_painter.session import Session
@@ -108,6 +110,23 @@ def test_disqualified_sales_are_excluded(session):
     assert (m.n_vacant, m.n_improved, m.ratio.n) == (1, 2, 1)
     assert m.ratio.prb is None  # one sale left
     assert m.over_price == 2
+
+
+def test_per_unit_land_evidence(session):
+    all_parcels = everything(session)
+    # vacant price/area: 10, 12; improved residual/area: 2, 1.25, -1
+    area = per_unit_land_evidence(session, all_parcels, "Area")
+    assert sorted(area.tolist()) == pytest.approx(sorted([10.0, 12.0, 2.0, 1.25, -1.0]))
+    # subset mask: only P0 (vacant) and P2 (improved)
+    mask = np.zeros(6, dtype=bool)
+    mask[[0, 2]] = True
+    assert sorted(per_unit_land_evidence(session, mask, "Area").tolist()) == pytest.approx([2.0, 10.0])
+    # LOT units are 1, so vacant = price and improved = residual
+    lot = per_unit_land_evidence(session, all_parcels, LOT)
+    assert sorted(lot.tolist()) == pytest.approx(sorted([1000.0, 2400.0, 200.0, 500.0, -100.0]))
+    # disqualified sales drop out
+    session.set_sale_flags([0], DISQUALIFIED)
+    assert sorted(per_unit_land_evidence(session, all_parcels, "Area").tolist()) == pytest.approx([-1.0, 1.25, 2.0, 12.0])
 
 
 def test_scope_is_the_given_parcels(session):

@@ -3,11 +3,23 @@
 // Geometry is fetched once from app://data; afterwards only the per-part
 // neighborhood array (Uint16) is re-fetched when assignments change.
 
-const {Deck, MapView, SolidPolygonLayer, PathLayer, ScatterplotLayer, WebMercatorViewport, FlyToInterpolator} = deck;
+const {Deck, MapView, SolidPolygonLayer, PathLayer, ScatterplotLayer, TileLayer, BitmapLayer,
+       WebMercatorViewport, FlyToInterpolator} = deck;
 
 const OUTLINE_MIN_ZOOM = 15;
-const ALPHA_SELECTED = 220;
-const ALPHA_OTHER = 110;
+// Parcels are drawn translucent so the basemap shows through for orientation.
+const ALPHA_SELECTED = 165;
+const ALPHA_OTHER = 75;
+
+// TEMPORARY: online basemap for testing. The SPEC mandates a local, offline
+// basemap (PMTiles); this online source is a testing-phase convenience and must
+// be swapped for local tiles before the app ships. See SPEC.md lines 11, 33.
+//
+// The basemap tile URLs come from Python via meta.basemap (Carto "Positron",
+// light, OSM-derived). The URLs carry the Carto API key, so they are built in
+// Python from an env var and never hard-coded here. If no key is configured the
+// list is empty and no basemap is drawn.
+const BASEMAP_MAX_ZOOM = 20;
 
 const state = {
   bridge: null,
@@ -17,6 +29,7 @@ const state = {
   outlineData: null,
   positions: null,    // Float64Array of all vertices (kept for highlight outlines)
   salesData: null,    // binary data for sale points, or null
+  basemap: [],        // basemap tile URL templates from meta (empty = no basemap)
   highlight: [],      // [{path}] outlines of the highlighted parcel
   partNbhd: null,     // Uint16Array, neighborhood index per part
   palette: [],        // [{name, parent, color}]
@@ -63,7 +76,29 @@ function recolor() {
 }
 
 function render() {
-  const layers = [
+  const layers = [];
+  // Basemap first so it sits beneath the parcels. Not pickable, so clicks and
+  // the hover cursor still resolve to parcels and sales above it. Omitted
+  // entirely when no basemap URL (and key) was supplied.
+  if (state.basemap.length) {
+    layers.push(new TileLayer({
+      id: 'basemap',
+      data: state.basemap,
+      minZoom: 0,
+      maxZoom: BASEMAP_MAX_ZOOM,
+      tileSize: 256,
+      onTileError: (err) => state.bridge.log(`tile error: ${(err && err.message) || err}`),
+      renderSubLayers: (props) => {
+        const {boundingBox} = props.tile;
+        return new BitmapLayer(props, {
+          data: null,
+          image: props.data,
+          bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]],
+        });
+      },
+    }));
+  }
+  layers.push(
     new SolidPolygonLayer({
       id: 'parcels',
       data: state.fillData,
@@ -90,7 +125,7 @@ function render() {
       getWidth: 3,
       widthUnits: 'pixels',
     }),
-  ];
+  );
   if (state.salesData) {
     layers.push(new ScatterplotLayer({
       id: 'sales',
@@ -174,6 +209,7 @@ function setupLasso(container) {
   const canvas = document.getElementById('lasso');
   const ctx = canvas.getContext('2d');
   let points = null;
+  let pointerId = null;
   let mode = 'create';  // shift+drag creates a sub-neighborhood; ctrl+shift+drag reassigns
   const styles = {
     create: {fill: 'rgba(255, 220, 60, 0.15)', stroke: 'rgba(255, 220, 60, 0.9)'},
@@ -198,11 +234,25 @@ function setupLasso(container) {
     ctx.stroke();
   };
 
+  // Abandon an in-progress drag without committing (Escape, right-click, or an
+  // OS pointer interruption). Releasing capture that was already released is a
+  // no-op worth guarding, so it is wrapped.
+  const cancel = () => {
+    if (!points) return;
+    points = null;
+    if (pointerId !== null) {
+      try { container.releasePointerCapture(pointerId); } catch (e) { /* already released */ }
+      pointerId = null;
+    }
+    draw();  // points is null now, so this clears the overlay
+  };
+
   // Capture phase so deck.gl never sees shift-drags (it would pan the map).
   container.addEventListener('pointerdown', (e) => {
     if (!e.shiftKey || e.button !== 0) return;
     e.stopPropagation();
     container.setPointerCapture(e.pointerId);
+    pointerId = e.pointerId;
     mode = e.ctrlKey ? 'reassign' : 'create';
     points = [[e.offsetX, e.offsetY]];
   }, true);
@@ -217,6 +267,7 @@ function setupLasso(container) {
     e.stopPropagation();
     const screen = points;
     points = null;
+    pointerId = null;  // capture is released automatically on pointerup
     draw();
     if (screen.length < 3) return;
     const viewport = state.deck.getViewports()[0];
@@ -224,6 +275,19 @@ function setupLasso(container) {
     startTimer('lasso');
     state.bridge.lasso(JSON.stringify(lngLat), mode);
   }, true);
+
+  container.addEventListener('pointercancel', cancel, true);
+  // Right-click during a drag cancels it instead of opening a context menu.
+  container.addEventListener('contextmenu', (e) => {
+    if (!points) return;
+    e.preventDefault();
+    e.stopPropagation();
+    cancel();
+  }, true);
+  // Escape anywhere cancels a drag in progress.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && points) { e.stopPropagation(); cancel(); }
+  });
 }
 
 // --- Startup -----------------------------------------------------------------
@@ -231,6 +295,7 @@ function setupLasso(container) {
 async function loadData() {
   const t0 = performance.now();
   const meta = await (await fetch('app://data/meta')).json();
+  state.basemap = meta.basemap || [];
   const [positions, starts, ringStarts, indices, partNbhd] = await Promise.all([
     fetchArray('positions', Float64Array),
     fetchArray('starts', Uint32Array),
@@ -291,7 +356,8 @@ async function loadData() {
   recolor();
   state.afterFirstRender = () => onSalesChanged(0);  // sale points once parcels are on screen
   setStatus(`${meta.n_parcels.toLocaleString()} parcels · click: open neighborhood · `
-            + `shift+drag: new sub-neighborhood · ctrl+shift+drag: move parcels into the selected neighborhood`);
+            + `shift+drag: new sub-neighborhood · ctrl+shift+drag: move parcels into the selected neighborhood · `
+            + `Esc / right-click: cancel drag`);
 }
 
 window.addEventListener('error', (e) => state.bridge && state.bridge.log(`js error: ${e.message}`));

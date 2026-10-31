@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from PySide6.QtCore import QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QStandardPaths, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from .scheme import SCHEME, AppSchemeHandler
+
+# Cap on the on-disk basemap tile cache. Tiles are small; this holds plenty.
+HTTP_CACHE_MAX_BYTES = 256 * 1024 * 1024  # 256 MB
 
 
 class MapBridge(QObject):
@@ -56,12 +61,30 @@ class MapBridge(QObject):
 class MapView(QWebEngineView):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.bridge = MapBridge(self)
+
+        # A named profile is persistent (the default profile is off-the-record and
+        # caches only in memory, so every launch would re-download every basemap
+        # tile). A disk HTTP cache lets Chromium serve already-seen tiles straight
+        # from disk between runs, keeping us within the shared Carto key's budget.
+        self.profile = QWebEngineProfile("land_painter", self)
+        cache_dir = Path(QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.CacheLocation)) / "web"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        self.profile.setCachePath(str(cache_dir))
+        self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
+        self.profile.setHttpCacheMaximumSize(HTTP_CACHE_MAX_BYTES)
+        # Identify the app to basemap tile servers, as their usage policies ask.
+        self.profile.setHttpUserAgent(f"{self.profile.httpUserAgent()} LandPainter/0.1")
+
         self.scheme_handler = AppSchemeHandler(self)
-        self.page().profile().installUrlSchemeHandler(SCHEME, self.scheme_handler)
-        self._channel = QWebChannel(self.page())
+        self.profile.installUrlSchemeHandler(SCHEME, self.scheme_handler)
+
+        self.bridge = MapBridge(self)
+        self._page = QWebEnginePage(self.profile, self)
+        self.setPage(self._page)
+        self._channel = QWebChannel(self._page)
         self._channel.registerObject("bridge", self.bridge)
-        self.page().setWebChannel(self._channel)
+        self._page.setWebChannel(self._channel)
 
     def start(self) -> None:
         self.load(QUrl("app://map/index.html"))

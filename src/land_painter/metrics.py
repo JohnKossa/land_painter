@@ -210,6 +210,40 @@ def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.
                    allocation_table, allocation_vacant, allocation_sales, over, checked, evidence, best_unit)
 
 
+def per_unit_land_evidence(session, parcel_mask: np.ndarray, unit: str) -> np.ndarray:
+    """Per-unit land-value observations from sales on the masked parcels.
+
+    Vacant sales contribute ``price / units``; improved sales contribute the land
+    residual ``(price − depreciated cost) / units``. Used to calibrate a
+    multiplier to market evidence. Only usable sales with a positive price and
+    positive units count; improved sales also need a depreciated cost.
+    """
+    dataset = session.dataset
+    sales = dataset.sales
+    if sales is None:
+        return np.zeros(0)
+    sale_parcel = sales["parcel"].to_numpy()
+    price = sales["price"].fill_null(np.nan).to_numpy().astype(float)
+    ok = usable(session.sale_flags, sales) & parcel_mask[sale_parcel] & (price > 0)
+    vacant = sales["vacant"].fill_null(False).to_numpy()
+    units_all = dataset.unit_values(unit)
+    samples = []
+    v = np.flatnonzero(ok & vacant)
+    if len(v):
+        u = units_all[sale_parcel[v]]
+        m = u > 0
+        samples.append(price[v][m] / u[m])
+    if DEPRECIATED_COST in dataset.parcels.columns:
+        i = np.flatnonzero(ok & ~vacant)
+        if len(i):
+            cost = dataset.parcels[DEPRECIATED_COST].cast(float).fill_null(np.nan).to_numpy()
+            u = units_all[sale_parcel[i]]
+            c = cost[sale_parcel[i]]
+            m = (u > 0) & ~np.isnan(c)
+            samples.append((price[i][m] - c[m]) / u[m])
+    return np.concatenate(samples) if samples else np.zeros(0)
+
+
 def over_price_sales(session, parcel_mask: np.ndarray) -> np.ndarray:
     """Indices of usable sales in scope whose land value exceeds the sale price."""
     sales = session.dataset.sales

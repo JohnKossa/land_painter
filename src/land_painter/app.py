@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -24,6 +25,20 @@ from .ui.tasks import run_with_progress
 
 SALE_COLORS = {UNFLAGGED: (240, 240, 240, 255), KNOWN_GOOD: (152, 195, 121, 255), DISQUALIFIED: (224, 108, 117, 255)}
 SESSION_FILTER = f"Land Painter session (*{SESSION_SUFFIX})"
+
+# TEMPORARY online basemap (see SPEC.md lines 11, 33 — the shipping app uses a
+# local, offline basemap). Carto "Positron" raster tiles, keyed by the API key
+# in CARTO_API_KEY_ENV so the shared key stays out of source. No key -> no URLs
+# -> the map draws no basemap. {z}/{x}/{y} are left for deck.gl to substitute.
+CARTO_API_KEY_ENV = "LAND_PAINTER_CARTO_KEY"
+
+
+def _basemap_urls() -> list[str]:
+    key = os.environ.get(CARTO_API_KEY_ENV, "").strip()
+    if not key:
+        return []
+    return [f"https://{sub}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}.png?key={key}"
+            for sub in ("a", "b", "c", "d")]
 
 _windows: list[MainWindow] = []  # keep top-level windows alive
 
@@ -396,6 +411,7 @@ class MainWindow(QMainWindow):
             "n_parcels": self.layer.n_parcels,
             "bounds": self.layer.bounds,
             "palette": self.session.neighborhoods.palette(),
+            "basemap": _basemap_urls(),
         }).encode()
 
     def _part_assignment(self) -> bytes:

@@ -15,8 +15,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..data.config import CONTINUOUS
-from ..land_table import ADD, IN, LOT, MULTIPLY, OPS, Adjustment, Condition, FlatRate, LandTable
-from ..metrics import compute
+from ..land_table import ADD, IN, LOT, MULTIPLY, OPS, Adjustment, Condition, FlatRate, LandTable, evaluate
+from ..metrics import compute, per_unit_land_evidence
 from ..session import Session
 from .metrics_panel import ratio_html
 
@@ -107,12 +107,16 @@ class NeighborhoodPicker(QComboBox):
 
 
 class AdjustmentDialog(QDialog):
-    def __init__(self, session: Session, parcels: np.ndarray, adjustment: Adjustment | None = None, parent=None):
+    def __init__(self, session: Session, parcels: np.ndarray, adjustment: Adjustment | None = None,
+                 base_table: LandTable | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Adjustment")
         self.resize(520, 560)
         self._session = session
         self._parcels = parcels
+        # The land table without this adjustment, used by Guess to read the
+        # matched parcels' and neighbours' current land values.
+        self._base_table = base_table
         self._fields = session.dataset.filter_fields()
 
         self.name = QLineEdit()
@@ -138,6 +142,14 @@ class AdjustmentDialog(QDialog):
         self.amount.setRange(-1e12, 1e12)
         self.amount.setDecimals(4)
         self.amount.setValue(1.0)
+        self.guess = QPushButton("Guess")
+        self.guess.setToolTip("Set the amount so the matched parcels' median land value\n"
+                              "matches the median of the rest of the neighborhood.")
+        self.guess.clicked.connect(self._guess)
+        self.guess.setEnabled(base_table is not None)
+        self.guess_info = QLabel()
+        self.guess_info.setWordWrap(True)
+        self.guess_info.setStyleSheet("color: #888")
         self.matches = QLabel()
 
         self.continuous = QWidget()
@@ -161,7 +173,11 @@ class AdjustmentDialog(QDialog):
         form.addRow("", self.matches)
         form.addRow("Effect:", self.multiply)
         form.addRow("", self.add)
-        form.addRow("Amount:", self.amount)
+        amount_row = QHBoxLayout()
+        amount_row.addWidget(self.amount, 1)
+        amount_row.addWidget(self.guess)
+        form.addRow("Amount:", amount_row)
+        form.addRow("", self.guess_info)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
@@ -243,6 +259,72 @@ class AdjustmentDialog(QDialog):
         n = int(condition.mask(data).sum())
         self.matches.setText(f"Matches {n:,} of {len(self._parcels):,} parcels in this neighborhood")
         self._ok.setEnabled(condition.op != IN or bool(condition.values))
+        self.guess_info.clear()  # any earlier guess no longer matches this condition
+
+    def _guess(self) -> None:
+        """Suggest the amount from the data.
+
+        Additive: a flat shift so the matched parcels' median land value equals
+        the rest of the neighborhood's (exact, since additions are flat).
+
+        Multiplicative: calibrate the matched parcels' per-unit table value to
+        their market per-unit value (vacant price/units and improved land
+        residuals), so the multiplier reflects proportional, size-normalised
+        evidence rather than raw land values.
+        """
+        if self._base_table is None:
+            return
+        dataset = self._session.dataset
+        condition = self.condition_value()
+        if condition.op == IN and not condition.values:
+            self.guess_info.setText("Pick at least one value to match first.")
+            return
+        units = dataset.unit_values(self._base_table.unit)[self._parcels]
+        land = evaluate(self._base_table, units, dataset.characteristic, self._parcels)
+        matched = condition.mask(dataset.characteristic(condition.field)[self._parcels])
+
+        if self.multiply.isChecked():
+            self._guess_multiplier(land, units, matched)
+        else:
+            self._guess_addition(land, matched)
+
+    def _guess_addition(self, land: np.ndarray, matched: np.ndarray) -> None:
+        matched_lv = land[matched][~np.isnan(land[matched])]
+        rest_lv = land[~matched][~np.isnan(land[~matched])]
+        if not len(matched_lv) or not len(rest_lv):
+            self.guess_info.setText("Need parcels with a land value in both the matched group "
+                                    "and the rest of the neighborhood.")
+            return
+        m_med, r_med = float(np.median(matched_lv)), float(np.median(rest_lv))
+        self.amount.setValue(r_med - m_med)
+        self.guess_info.setText(f"Aligns medians — matched {_money(m_med)} → rest {_money(r_med)} "
+                                f"({len(matched_lv):,} vs {len(rest_lv):,} valued parcels)")
+
+    def _guess_multiplier(self, land: np.ndarray, units: np.ndarray, matched: np.ndarray) -> None:
+        # Matched parcels' current per-unit table value.
+        table_ok = matched & ~np.isnan(land) & (units > 0)
+        if not table_ok.any():
+            self.guess_info.setText("No matched parcels with a land value and positive units.")
+            return
+        table_pu = float(np.median(land[table_ok] / units[table_ok]))
+        if table_pu == 0:
+            self.guess_info.setText("Matched parcels' per-unit table value is $0 — can't compute a multiplier.")
+            return
+        # Matched parcels' market per-unit value (vacant + improved residuals).
+        mask = np.zeros(len(self._session.land_values), dtype=bool)
+        mask[self._parcels[matched]] = True
+        market = per_unit_land_evidence(self._session, mask, self._base_table.unit)
+        market = market[np.isfinite(market)]
+        if not len(market):
+            self.guess_info.setText("No usable sales on the matched parcels to calibrate against.")
+            return
+        market_pu = float(np.median(market))
+        if market_pu <= 0:
+            self.guess_info.setText("Market evidence gives a non-positive per-unit value — can't form a multiplier.")
+            return
+        self.amount.setValue(market_pu / table_pu)
+        self.guess_info.setText(f"Calibrates to market — table {_money(table_pu)}/unit → "
+                                f"market {_money(market_pu)}/unit ({len(market):,} sale observations)")
 
     def _accept(self) -> None:
         self.accept()
@@ -478,7 +560,8 @@ class LandTablePanel(QWidget):
         self._show_draft()
 
     def _add_adjustment(self) -> None:
-        dialog = AdjustmentDialog(self.session, self._parcels, parent=self)
+        # The draft has no new adjustment yet, so it is the base for Guess.
+        dialog = AdjustmentDialog(self.session, self._parcels, base_table=self.draft, parent=self)
         if dialog.exec():
             self._set_adjustments([*self.draft.adjustments, dialog.result_adjustment()])
 
@@ -486,7 +569,10 @@ class LandTablePanel(QWidget):
         row = self.adjustments.currentRow()
         if row < 0:
             return
-        dialog = AdjustmentDialog(self.session, self._parcels, self.draft.adjustments[row], parent=self)
+        # Guess compares against the table without the adjustment being edited.
+        others = tuple(a for i, a in enumerate(self.draft.adjustments) if i != row)
+        base = LandTable(self.draft.unit, self.draft.rate, others)
+        dialog = AdjustmentDialog(self.session, self._parcels, self.draft.adjustments[row], base_table=base, parent=self)
         if dialog.exec():
             adjustments = list(self.draft.adjustments)
             adjustments[row] = dialog.result_adjustment()
