@@ -80,10 +80,10 @@ def test_metrics_without_land_table(session):
     assert (area.vacant.minimum, area.vacant.mean, area.vacant.maximum) == (10.0, 11.0, 12.0)
     # residuals per sqft: (250-50)/100 = 2, (600-100)/400 = 1.25, (200-300)/100 = -1
     assert (area.residual.minimum, area.residual.maximum) == (pytest.approx(-1.0), pytest.approx(2.0))
-    frontage = next(e for e in m.evidence if e.unit == "Road frontage")
-    assert frontage.cov > area.cov  # 100 vs 240 per foot is far more spread than 10 vs 12 per sqft
-    assert m.best_unit == "Area"
-    assert next(e for e in m.evidence if e.unit == LOT).cov == pytest.approx(frontage.cov)  # same frontage everywhere
+    assert area.residuals_dropped == 1  # P4: cost exceeds price
+    # 2 vacant and 2 positive residuals are under MIN_SALES: no spreads, no best unit
+    assert all(e.vacant_spread is None and e.residual_spread is None and e.score is None for e in m.evidence)
+    assert m.best_unit is None and m.weights.vacant_weight is None and m.weights.improved_weight is None
     assert m.allocation_sales == pytest.approx(np.median([1 - 50 / 250, 1 - 100 / 600, 1 - 300 / 200]))
     assert m.allocation_table is None  # needs land values
 
@@ -136,3 +136,88 @@ def test_scope_is_the_given_parcels(session):
     m = compute(session, mask, LOT)
     assert (m.n_parcels, m.n_vacant, m.n_improved) == (2, 1, 1)
     assert m.ratio.median == pytest.approx(0.5)
+
+
+# --- Precision-weighted unit scoring -------------------------------------------------------
+
+V_AREA = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0]
+V_NOISE = [1.0, 1.05, 0.95, 1.02, 0.98, 1.03]  # vacant: tight around $10/sqft
+I_AREA = [150.0, 250.0, 350.0, 450.0, 550.0, 650.0]
+I_NOISE = [1.1, 0.9, 1.2, 0.85, 1.0, 1.15]  # improved residuals: looser around $10/sqft
+COST = 1000.0
+
+
+@pytest.fixture
+def market(tmp_path):
+    n = len(V_AREA) + len(I_AREA) + 1
+    gdf = synthetic.make_parcels(n)
+    gdf["area"] = V_AREA + I_AREA + [100.0]
+    gdf["frontage"] = [10.0, 30.0, 15.0, 40.0, 20.0, 25.0, 35.0, 10.0, 45.0, 20.0, 30.0, 15.0, 10.0]
+    gdf["cost"] = [0.0] * len(V_AREA) + [COST] * len(I_AREA) + [5000.0]
+    parcels = tmp_path / "parcels.parquet"
+    gdf.to_parquet(parcels)
+    rows = ["key,price,date,vacant"]
+    for i, (a, k) in enumerate(zip(V_AREA, V_NOISE)):
+        rows.append(f"P{i},{10 * a * k},2024-01-01,Y")
+    for j, (a, k) in enumerate(zip(I_AREA, I_NOISE)):
+        rows.append(f"P{len(V_AREA) + j},{COST + 10 * a * k},2024-01-01,N")
+    rows.append(f"P{n - 1},2000,2024-01-01,N")  # cost 5000 > price: residual ≤ 0, left out
+    sales = tmp_path / "sales.csv"
+    sales.write_text("\n".join(rows) + "\n")
+    config = parcel_only_config(inspect(parcels))
+    p = config.parcel_file
+    config.files.append(FileSpec(str(sales), [ROLE_SALES]))
+    config.sales = SalesMapping("key", "price", "date", "vacant", ["Y"])
+    config.units = {"Area": ColumnRef(p, "area"), "Road frontage": ColumnRef(p, "frontage")}
+    config.depreciated_cost = [ColumnRef(p, "cost")]
+    return Session.new(build_dataset(config))
+
+
+def _log_sd(values) -> float:
+    return 100 * float(np.std(np.log(values), ddof=1))
+
+
+def test_unit_score_is_precision_weighted(market):
+    m = compute(market, everything(market))
+    by_unit = {e.unit: e for e in m.evidence}
+    area = by_unit["Area"]
+    v = np.array([10 * k for k in V_NOISE])
+    r = np.array([10 * k for k in I_NOISE])
+    assert area.vacant_spread == pytest.approx(_log_sd(v))
+    assert area.residual_spread == pytest.approx(_log_sd(r))
+    assert area.residuals_dropped == 1
+
+    # Each group's noise is its lowest spread across units, and is the same for every unit
+    assert m.weights.vacant_noise == pytest.approx(min(e.vacant_spread for e in m.evidence))
+    assert m.weights.improved_noise == pytest.approx(min(e.residual_spread for e in m.evidence))
+    wv, wi = m.weights.vacant_weight, m.weights.improved_weight
+    assert wv == pytest.approx(1 / (m.weights.vacant_noise / 100) ** 2)
+    assert wv > wi  # vacant sales are tighter, so each counts for more
+
+    # Score: weighted SD of logs around one shared mean, reliability-weight correction
+    x = np.log(np.concatenate([v, r]))
+    w = np.concatenate([np.full(len(v), wv), np.full(len(r), wi)])
+    mean = (w * x).sum() / w.sum()
+    expected = 100 * np.sqrt((w * (x - mean) ** 2).sum() / (w.sum() - (w ** 2).sum() / w.sum()))
+    assert area.score == pytest.approx(expected)
+
+    assert m.best_unit == "Area"
+    assert all(e.score > area.score for e in m.evidence if e.unit != "Area")
+
+
+def test_unit_score_from_improved_sales_alone(market):
+    # Too few vacant sales: improved sales still pick the unit, at full weight
+    market.set_sale_flags([0, 1], DISQUALIFIED)
+    m = compute(market, everything(market))
+    assert m.weights.vacant_weight is None and m.weights.improved_weight is not None
+    assert m.best_unit == "Area"
+    for e in m.evidence:  # one group with equal weights: the score is that group's own spread
+        assert e.vacant_spread is None
+        assert e.score == pytest.approx(e.residual_spread)
+
+
+def test_level_gap_between_groups_counts_against_a_unit():
+    from land_painter.metrics import weighted_log_spread
+    same = weighted_log_spread([(np.array([9.0, 10.0, 11.0]), 1.0), (np.array([9.0, 10.0, 11.0]), 1.0)])
+    gap = weighted_log_spread([(np.array([9.0, 10.0, 11.0]), 1.0), (np.array([18.0, 20.0, 22.0]), 1.0)])
+    assert gap > same

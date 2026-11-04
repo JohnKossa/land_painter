@@ -144,6 +144,30 @@ def components(table: LandTable, units: np.ndarray, field_data: Callable[[str], 
     return table.rate.value(units), multiplier, addition
 
 
+def split_tables(table: LandTable, position: int) -> tuple[LandTable, LandTable]:
+    """(parent table, child table) when adjustment ``position`` becomes its own child neighborhood.
+
+    The child takes the parcels the adjustment matched, so both tables keep
+    every land value unchanged:
+
+    - the parent drops the adjustment (none of its remaining parcels match it);
+    - a multiplier on a flat rate is folded into the child's rate, so the
+      child's rate is the sub-market's actual rate;
+    - otherwise (an addition, or a rate model a multiplier cannot fold into)
+      the child keeps the adjustment, which now matches every parcel in it.
+
+    The parent's other adjustments carry over to the child.
+    """
+    adjustment = table.adjustments[position]
+    others = table.adjustments[:position] + table.adjustments[position + 1:]
+    parent = LandTable(table.unit, table.rate, others)
+    if adjustment.kind == MULTIPLY and isinstance(table.rate, FlatRate):
+        child = LandTable(table.unit, FlatRate(table.rate.rate * adjustment.amount), others)
+    else:
+        child = table
+    return parent, child
+
+
 def evaluate(table: LandTable, units: np.ndarray, field_data: Callable[[str], np.ndarray],
              parcels: np.ndarray) -> np.ndarray:
     """Land values for ``parcels`` under ``table``; NaN where units are missing."""

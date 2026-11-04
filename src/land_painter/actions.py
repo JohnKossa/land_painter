@@ -182,6 +182,56 @@ def _table_dict(table: LandTable | None) -> dict | None:
 
 @register
 @dataclass
+class SplitNeighborhood(Action):
+    """Move parcels (all currently in ``parent``) into a new child with its own land table,
+    and set the parent's land table, as one undo step."""
+
+    kind: ClassVar[str] = "split_neighborhood"
+    label: ClassVar[str] = "Split Neighborhood"
+
+    parent: int
+    parcels: np.ndarray
+    name: str
+    index: int  # expected index of the new neighborhood, checked on replay
+    child_table: LandTable | None
+    parent_table: LandTable | None
+    previous_parent_table: LandTable | None
+
+    def apply(self, state: State) -> None:
+        model = state.neighborhoods
+        index = model.add_child(self.parent, self.parcels, self.name)
+        if index != self.index:
+            raise RuntimeError(f"Journal out of sync: expected neighborhood {self.index}, got {index}")
+        model.neighborhoods[index].table = self.child_table
+        model.neighborhoods[self.parent].table = self.parent_table
+
+    def revert(self, state: State) -> None:
+        state.neighborhoods.neighborhoods[self.parent].table = self.previous_parent_table
+        state.neighborhoods.remove_last(self.parcels)
+
+    def to_record(self) -> tuple[dict, bytes | None]:
+        return {"parent": self.parent, "name": self.name, "index": self.index,
+                "child_table": _table_dict(self.child_table), "parent_table": _table_dict(self.parent_table),
+                "previous_parent_table": _table_dict(self.previous_parent_table)}, pack_indices(self.parcels)
+
+    @classmethod
+    def from_record(cls, params: dict, data: bytes | None) -> SplitNeighborhood:
+        return cls(params["parent"], unpack_indices(data), params["name"], params["index"],
+                   LandTable.from_dict(params["child_table"]), LandTable.from_dict(params["parent_table"]),
+                   LandTable.from_dict(params["previous_parent_table"]))
+
+
+@register
+@dataclass
+class ConvertAdjustment(SplitNeighborhood):
+    """A split made from a land table adjustment (see ``land_table.split_tables``)."""
+
+    kind: ClassVar[str] = "convert_adjustment"
+    label: ClassVar[str] = "Convert Adjustment to Neighborhood"
+
+
+@register
+@dataclass
 class SetLandTable(Action):
     kind: ClassVar[str] = "set_land_table"
     label: ClassVar[str] = "Edit Land Table"

@@ -88,6 +88,43 @@ def _median(values: np.ndarray) -> float | None:
     return float(np.median(values)) if len(values) else None
 
 
+# --- Unit of measure scoring --------------------------------------------------------------
+# Spread is measured on log(value per unit): scale-free like COV (its SD is
+# roughly the COV for small spreads) and tolerant of the usual right skew.
+# Non-positive cost residuals have no log and are left out.
+
+MIN_SALES = 5  # per group (vacant / improved) for that group's spread to count
+NOISE_FLOOR = 1e-6  # smallest log variance used as a group's noise, so weights stay finite
+
+
+def log_variance(values: np.ndarray) -> float | None:
+    """Sample variance of log(values); None with fewer than MIN_SALES values."""
+    if len(values) < MIN_SALES:
+        return None
+    return float(np.var(np.log(values), ddof=1))
+
+
+def as_percent(variance: float | None) -> float | None:
+    """A log variance as its SD in percent, comparable to a COV."""
+    return None if variance is None else float(100 * np.sqrt(variance))
+
+
+def weighted_log_spread(groups: list[tuple[np.ndarray, float]]) -> float:
+    """Weighted SD (in percent) of log(values) around one shared weighted mean.
+
+    ``groups`` is (values, weight per value). Weights are reliability weights,
+    so the variance uses the matching small-sample correction. Because every
+    group is measured against the same mean, a level gap between groups adds
+    to the spread.
+    """
+    x = np.concatenate([np.log(values) for values, _ in groups])
+    w = np.concatenate([np.full(len(values), weight) for values, weight in groups])
+    total = w.sum()
+    mean = (w * x).sum() / total
+    variance = (w * (x - mean) ** 2).sum() / (total - (w ** 2).sum() / total)
+    return float(100 * np.sqrt(variance))
+
+
 # --- Neighborhood metrics ------------------------------------------------------------------
 
 
@@ -96,7 +133,24 @@ class UnitEvidence:
     unit: str
     vacant: Range | None  # sale price / units, usable vacant sales
     residual: Range | None  # (sale price − depreciated cost) / units, usable improved sales
-    cov: float | None  # COV of the vacant sale prices per unit
+    vacant_spread: float | None = None  # SD of log(vacant price per unit), percent; None below MIN_SALES
+    residual_spread: float | None = None  # same for positive residuals per unit
+    residuals_dropped: int = 0  # improved sales with a residual ≤ 0 (no log), left out of the spreads
+    score: float | None = None  # precision-weighted spread of both groups, percent; lowest is best
+
+
+@dataclass
+class UnitWeights:
+    """Per-sale weights for the unit score, fixed per neighborhood (the same for every unit).
+
+    A group's noise is its lowest log variance across the candidate units: the
+    spread left even under the best-fitting unit. Each sale is weighted by the
+    inverse of its group's noise. None means the group has too few sales.
+    """
+    vacant_noise: float | None = None  # as SD in percent
+    improved_noise: float | None = None
+    vacant_weight: float | None = None  # per sale
+    improved_weight: float | None = None
 
 
 @dataclass
@@ -113,11 +167,64 @@ class Metrics:
     over_price: int  # usable sales whose land value exceeds the sale price
     over_price_checked: int  # usable sales with a land value
     evidence: list[UnitEvidence] = field(default_factory=list)
-    best_unit: str | None = None  # lowest COV of vacant sale prices per unit
+    best_unit: str | None = None  # lowest precision-weighted spread (UnitEvidence.score)
+    weights: UnitWeights = field(default_factory=UnitWeights)
 
     @property
     def has_cost(self) -> bool:
         return self.allocation_table is not None or self.allocation_sales is not None
+
+
+def _unit_evidence(dataset, sale_parcel, price, cost, vacant_sales: np.ndarray,
+                   improved_sales: np.ndarray) -> tuple[list[UnitEvidence], str | None, UnitWeights]:
+    """Evidence for every unit, the best unit, and the weights used to pick it.
+
+    Scoring: per group, the noise is the lowest log variance across units
+    (fixed per neighborhood, so all units are scored with the same weights);
+    each sale is weighted by 1 / its group's noise; the score is the weighted
+    spread of log(value per unit) of both groups around one shared mean. A
+    unit is scored only if every group with a noise estimate has at least
+    MIN_SALES usable values under it, so the scores stay comparable.
+    """
+    rows = []  # (name, vacant per unit, all residuals per unit, positive residuals per unit)
+    for name in dataset.unit_names():
+        units = dataset.unit_values(name)
+        v_units = units[sale_parcel[vacant_sales]] if len(vacant_sales) else np.zeros(0)
+        v_ok = v_units > 0
+        per_unit = price[vacant_sales][v_ok] / v_units[v_ok] if len(vacant_sales) else np.zeros(0)
+        residual = np.zeros(0)
+        if cost is not None and len(improved_sales):
+            i_units = units[sale_parcel[improved_sales]]
+            i_cost = cost[sale_parcel[improved_sales]]
+            i_ok = (i_units > 0) & ~np.isnan(i_cost)
+            residual = (price[improved_sales][i_ok] - i_cost[i_ok]) / i_units[i_ok]
+        rows.append((name, per_unit, residual, residual[residual > 0]))
+
+    v_vars = [log_variance(v) for _, v, _, _ in rows]
+    r_vars = [log_variance(r) for _, _, _, r in rows]
+    known_v, known_r = [v for v in v_vars if v is not None], [v for v in r_vars if v is not None]
+    v_noise = max(min(known_v), NOISE_FLOOR) if known_v else None
+    r_noise = max(min(known_r), NOISE_FLOOR) if known_r else None
+    weights = UnitWeights(as_percent(v_noise), as_percent(r_noise),
+                          1 / v_noise if v_noise else None, 1 / r_noise if r_noise else None)
+
+    evidence = []
+    for (name, per_unit, residual, positive), v_var, r_var in zip(rows, v_vars, r_vars):
+        groups = []
+        complete = v_noise is not None or r_noise is not None
+        if v_noise is not None:
+            complete &= v_var is not None
+            groups.append((per_unit, weights.vacant_weight))
+        if r_noise is not None:
+            complete &= r_var is not None
+            groups.append((positive, weights.improved_weight))
+        score = weighted_log_spread(groups) if complete else None
+        evidence.append(UnitEvidence(
+            name, value_range(per_unit), value_range(residual) if cost is not None else None,
+            as_percent(v_var), as_percent(r_var), len(residual) - len(positive), score))
+    scored = [e for e in evidence if e.score is not None]
+    best_unit = min(scored, key=lambda e: e.score).unit if scored else None
+    return evidence, best_unit, weights
 
 
 def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.ndarray | None = None) -> Metrics:
@@ -144,22 +251,8 @@ def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.
         sale_parcel = price = None
         vacant_sales = improved_sales = np.zeros(0, dtype=np.int64)
 
-    # Evidence per unit, and the best unit by COV
-    evidence = []
-    for name in dataset.unit_names():
-        units = dataset.unit_values(name)
-        v_units = units[sale_parcel[vacant_sales]] if len(vacant_sales) else np.zeros(0)
-        v_ok = v_units > 0
-        per_unit = price[vacant_sales][v_ok] / v_units[v_ok] if len(vacant_sales) else np.zeros(0)
-        residual = None
-        if has_cost and len(improved_sales):
-            i_units = units[sale_parcel[improved_sales]]
-            i_cost = cost[sale_parcel[improved_sales]]
-            i_ok = (i_units > 0) & ~np.isnan(i_cost)
-            residual = value_range((price[improved_sales][i_ok] - i_cost[i_ok]) / i_units[i_ok])
-        evidence.append(UnitEvidence(name, value_range(per_unit), residual, cov(per_unit)))
-    scored = [e for e in evidence if e.cov is not None]
-    best_unit = min(scored, key=lambda e: e.cov).unit if scored else None
+    # Evidence per unit, and the best unit by precision-weighted spread
+    evidence, best_unit, weights = _unit_evidence(dataset, sale_parcel, price, cost, vacant_sales, improved_sales)
     unit = unit or best_unit or LOT
 
     # Ratio study: vacant sales whose parcel has a land value
@@ -207,7 +300,8 @@ def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.
         over = int((s_land[valued] > price[all_sales][valued]).sum())
 
     return Metrics(len(parcels), len(vacant_sales), len(improved_sales), ratio, unit, spread_cod,
-                   allocation_table, allocation_vacant, allocation_sales, over, checked, evidence, best_unit)
+                   allocation_table, allocation_vacant, allocation_sales, over, checked, evidence, best_unit,
+                   weights)
 
 
 def per_unit_land_evidence(session, parcel_mask: np.ndarray, unit: str) -> np.ndarray:

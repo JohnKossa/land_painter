@@ -22,12 +22,12 @@ from pathlib import Path
 import numpy as np
 
 from .actions import (
-    Action, ApplyTableToChildren, CreateNeighborhood, DeleteNeighborhood, ImportNeighborhoods, ReassignParcels,
-    RenameNeighborhood, SetLandTable, SetSaleFlags, decode,
+    Action, ApplyTableToChildren, ConvertAdjustment, CreateNeighborhood, DeleteNeighborhood, ImportNeighborhoods,
+    ReassignParcels, RenameNeighborhood, SetLandTable, SetSaleFlags, SplitNeighborhood, decode,
 )
 from .data.config import ImportConfig
 from .data.dataset import Dataset, build_dataset
-from .land_table import LandTable, evaluate
+from .land_table import Condition, LandTable, evaluate, split_tables
 from .neighborhoods import ROOT, NeighborhoodModel
 from .sales import sales_fingerprint
 
@@ -266,6 +266,49 @@ class Session:
             return None
         index = self.neighborhoods.next_index()
         self.do(CreateNeighborhood(parent, members, f"N{index}", index))
+        return index
+
+    def describe_condition(self, condition: Condition) -> str:
+        labels = {key: label for key, label, _ in self.dataset.filter_fields()}
+        return condition.describe(labels.get(condition.field, condition.field.split("::", 1)[-1]))
+
+    def matching_parcels(self, neighborhood: int, condition: Condition) -> np.ndarray:
+        """Parcels directly in ``neighborhood`` (not in its children) that match ``condition``."""
+        parcels = np.flatnonzero(self.neighborhoods.assignment == neighborhood)
+        return parcels[condition.mask(self.dataset.characteristic(condition.field)[parcels])]
+
+    def split_neighborhood(self, parent: int, condition: Condition, name: str | None = None) -> int | None:
+        """Move the parcels directly in ``parent`` that match ``condition`` into a new child.
+
+        The child starts with a copy of the parent's land table. Returns the
+        new neighborhood's index, or None (and records nothing) if nothing matched.
+        """
+        parcels = self.matching_parcels(parent, condition)
+        if parcels.size == 0:
+            return None
+        table = self.neighborhoods.neighborhoods[parent].table
+        index = self.neighborhoods.next_index()
+        name = (name or "").strip() or self.describe_condition(condition)
+        self.do(SplitNeighborhood(parent, parcels, name, index, table, table, table))
+        return index
+
+    def convert_adjustment(self, parent: int, position: int, name: str | None = None) -> int | None:
+        """Turn adjustment ``position`` of ``parent``'s land table into a child neighborhood.
+
+        Its matching parcels move to the child; land values are unchanged (see
+        ``land_table.split_tables``). Returns the new index, or None if nothing matched.
+        """
+        table = self.neighborhoods.neighborhoods[parent].table
+        if table is None or not 0 <= position < len(table.adjustments):
+            raise ValueError(f"No adjustment {position} in this neighborhood's land table")
+        adjustment = table.adjustments[position]
+        parcels = self.matching_parcels(parent, adjustment.condition)
+        if parcels.size == 0:
+            return None
+        parent_table, child_table = split_tables(table, position)
+        index = self.neighborhoods.next_index()
+        name = (name or "").strip() or adjustment.name or self.describe_condition(adjustment.condition)
+        self.do(ConvertAdjustment(parent, parcels, name, index, child_table, parent_table, table))
         return index
 
     # --- Land values ----------------------------------------------------------------

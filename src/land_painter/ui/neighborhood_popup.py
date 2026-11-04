@@ -17,6 +17,7 @@ from .metrics_panel import MetricsPanel
 class NeighborhoodPopup(QWidget):
     renameRequested = Signal(int)
     deleteRequested = Signal(int)
+    splitRequested = Signal(int)
 
     def __init__(self, session: Session, land_panel: LandTablePanel, metrics_panel: MetricsPanel, parent=None):
         super().__init__(parent)
@@ -27,11 +28,15 @@ class NeighborhoodPopup(QWidget):
         self.name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         rename = QPushButton("Rename…")
         rename.clicked.connect(lambda: self.renameRequested.emit(self.index))
+        split = QPushButton("Split by filter…")
+        split.setToolTip("Move the parcels in this neighborhood that match a filter into a new child neighborhood")
+        split.clicked.connect(lambda: self.splitRequested.emit(self.index))
         self.delete = QPushButton("Delete…")
         self.delete.clicked.connect(lambda: self.deleteRequested.emit(self.index))
         header = QHBoxLayout()
         header.addWidget(self.name, 1)
         header.addWidget(rename)
+        header.addWidget(split)
         header.addWidget(self.delete)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)

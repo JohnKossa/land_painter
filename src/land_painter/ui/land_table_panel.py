@@ -10,7 +10,7 @@ import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QCompleter, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
     QPushButton, QRadioButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -103,26 +103,26 @@ class NeighborhoodPicker(QComboBox):
             self.chosen.emit(self.itemData(i))
 
 
-# --- Adjustment dialog ------------------------------------------------------------------------
+# --- Condition picker --------------------------------------------------------------------------
 
 
-class AdjustmentDialog(QDialog):
-    def __init__(self, session: Session, parcels: np.ndarray, adjustment: Adjustment | None = None,
-                 base_table: LandTable | None = None, parent=None):
+class ConditionPicker(QWidget):
+    """Choose a condition on a characteristic, with a live count of matching parcels.
+
+    Used by the adjustment dialog and the split-by-filter dialog. ``changed``
+    fires whenever the condition (and so the match count) changes.
+    """
+
+    changed = Signal()
+
+    def __init__(self, session: Session, parcels: np.ndarray, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Adjustment")
-        self.resize(520, 560)
         self._session = session
         self._parcels = parcels
-        # The land table without this adjustment, used by Guess to read the
-        # matched parcels' and neighbours' current land values.
-        self._base_table = base_table
-        self._fields = session.dataset.filter_fields()
+        self.fields = session.dataset.filter_fields()
 
-        self.name = QLineEdit()
-        self.name.setPlaceholderText("optional, e.g. \"Lake access\"")
         self.field = QComboBox()
-        for key, label, kind in self._fields:
+        for key, label, kind in self.fields:
             self.field.addItem(label, (key, kind))
         self.op = QComboBox()
         self.op.addItems(OPS)
@@ -132,25 +132,8 @@ class AdjustmentDialog(QDialog):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Filter values…")
         self.values = QListWidget()
-        self.multiply = QRadioButton("Multiply the unit-of-measure value by")
-        self.add = QRadioButton("Add a fixed amount ($)")
-        kind_group = QButtonGroup(self)
-        kind_group.addButton(self.multiply)
-        kind_group.addButton(self.add)
-        self.multiply.setChecked(True)
-        self.amount = QDoubleSpinBox()
-        self.amount.setRange(-1e12, 1e12)
-        self.amount.setDecimals(4)
-        self.amount.setValue(1.0)
-        self.guess = QPushButton("Guess")
-        self.guess.setToolTip("Set the amount so the matched parcels' median land value\n"
-                              "matches the median of the rest of the neighborhood.")
-        self.guess.clicked.connect(self._guess)
-        self.guess.setEnabled(base_table is not None)
-        self.guess_info = QLabel()
-        self.guess_info.setWordWrap(True)
-        self.guess_info.setStyleSheet("color: #888")
         self.matches = QLabel()
+        self.matches.setWordWrap(True)
 
         self.continuous = QWidget()
         row = QHBoxLayout(self.continuous)
@@ -166,46 +149,47 @@ class AdjustmentDialog(QDialog):
         self.condition.addWidget(self.continuous)
         self.condition.addWidget(self.categorical)
 
-        form = QFormLayout()
-        form.addRow("Name:", self.name)
-        form.addRow("Applies where:", self.field)
-        form.addRow("", self.condition)
-        form.addRow("", self.matches)
-        form.addRow("Effect:", self.multiply)
-        form.addRow("", self.add)
-        amount_row = QHBoxLayout()
-        amount_row.addWidget(self.amount, 1)
-        amount_row.addWidget(self.guess)
-        form.addRow("Amount:", amount_row)
-        form.addRow("", self.guess_info)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
         layout = QVBoxLayout(self)
-        layout.addLayout(form, 1)
-        layout.addWidget(buttons)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.field)
+        layout.addWidget(self.condition, 1)
+        layout.addWidget(self.matches)
 
         self.field.currentIndexChanged.connect(self._field_changed)
         self.op.currentIndexChanged.connect(self._update_matches)
         self.value.valueChanged.connect(self._update_matches)
         self.values.itemChanged.connect(self._update_matches)
         self.search.textChanged.connect(self._filter_values)
-        self.multiply.toggled.connect(self._kind_changed)
 
-        if not self._fields:
+        if not self.fields:
+            self.field.setEnabled(False)
+            self.condition.setEnabled(False)
             self.matches.setText("No characteristics are available for filters. Mark some as Continuous or "
                                  "Categorical on the review screen when creating a session.")
-            self._ok.setEnabled(False)
-            return
-        if adjustment is not None:
-            self._load(adjustment)
         else:
             self._field_changed()
 
-    def _load(self, adjustment: Adjustment) -> None:
-        c = adjustment.condition
-        index = next((i for i, (key, _, _) in enumerate(self._fields) if key == c.field), 0)
+    @property
+    def available(self) -> bool:
+        return bool(self.fields)
+
+    @property
+    def complete(self) -> bool:
+        """A usable condition: a field is available and, for a value list, at least one value is ticked."""
+        if not self.fields:
+            return False
+        condition = self.condition_value()
+        return condition.op != IN or bool(condition.values)
+
+    def match_count(self) -> int:
+        if not self.fields:
+            return 0
+        condition = self.condition_value()
+        data = self._session.dataset.characteristic(condition.field)[self._parcels]
+        return int(condition.mask(data).sum())
+
+    def load(self, c: Condition) -> None:
+        index = next((i for i, (key, _, _) in enumerate(self.fields) if key == c.field), 0)
         self.field.setCurrentIndex(index)
         self._field_changed()
         if c.op == IN:
@@ -215,9 +199,6 @@ class AdjustmentDialog(QDialog):
         else:
             self.op.setCurrentText(c.op)
             self.value.setValue(c.value)
-        (self.multiply if adjustment.kind == MULTIPLY else self.add).setChecked(True)
-        self.amount.setValue(adjustment.amount)
-        self.name.setText(adjustment.name)
         self._update_matches()
 
     def _field_changed(self) -> None:
@@ -241,10 +222,6 @@ class AdjustmentDialog(QDialog):
             item = self.values.item(i)
             item.setHidden(bool(text) and text not in item.text().lower())
 
-    def _kind_changed(self) -> None:
-        if self.multiply.isChecked() and self.amount.value() == 0:
-            self.amount.setValue(1.0)
-
     def condition_value(self) -> Condition:
         key, kind = self.field.currentData()
         if kind == CONTINUOUS:
@@ -254,11 +231,85 @@ class AdjustmentDialog(QDialog):
         return Condition(key, IN, values=checked)
 
     def _update_matches(self) -> None:
-        condition = self.condition_value()
-        data = self._session.dataset.characteristic(condition.field)[self._parcels]
-        n = int(condition.mask(data).sum())
-        self.matches.setText(f"Matches {n:,} of {len(self._parcels):,} parcels in this neighborhood")
-        self._ok.setEnabled(condition.op != IN or bool(condition.values))
+        self.matches.setText(f"Matches {self.match_count():,} of {len(self._parcels):,} parcels in this neighborhood")
+        self.changed.emit()
+
+
+# --- Adjustment dialog ------------------------------------------------------------------------
+
+
+class AdjustmentDialog(QDialog):
+    def __init__(self, session: Session, parcels: np.ndarray, adjustment: Adjustment | None = None,
+                 base_table: LandTable | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Adjustment")
+        self.resize(520, 560)
+        self._session = session
+        self._parcels = parcels
+        # The land table without this adjustment, used by Guess to read the
+        # matched parcels' and neighbours' current land values.
+        self._base_table = base_table
+
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("optional, e.g. \"Lake access\"")
+        self.picker = ConditionPicker(session, parcels)
+        self.multiply = QRadioButton("Multiply the unit-of-measure value by")
+        self.add = QRadioButton("Add a fixed amount ($)")
+        kind_group = QButtonGroup(self)
+        kind_group.addButton(self.multiply)
+        kind_group.addButton(self.add)
+        self.multiply.setChecked(True)
+        self.amount = QDoubleSpinBox()
+        self.amount.setRange(-1e12, 1e12)
+        self.amount.setDecimals(4)
+        self.amount.setValue(1.0)
+        self.guess = QPushButton("Guess")
+        self.guess.setToolTip("Set the amount so the matched parcels' median land value\n"
+                              "matches the median of the rest of the neighborhood.")
+        self.guess.clicked.connect(self._guess)
+        self.guess.setEnabled(base_table is not None)
+        self.guess_info = QLabel()
+        self.guess_info.setWordWrap(True)
+        self.guess_info.setStyleSheet("color: #888")
+
+        form = QFormLayout()
+        form.addRow("Name:", self.name)
+        form.addRow("Applies where:", self.picker)
+        form.addRow("Effect:", self.multiply)
+        form.addRow("", self.add)
+        amount_row = QHBoxLayout()
+        amount_row.addWidget(self.amount, 1)
+        amount_row.addWidget(self.guess)
+        form.addRow("Amount:", amount_row)
+        form.addRow("", self.guess_info)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form, 1)
+        layout.addWidget(buttons)
+
+        self.picker.changed.connect(self._condition_changed)
+        self.multiply.toggled.connect(self._kind_changed)
+
+        if adjustment is not None and self.picker.available:
+            self.picker.load(adjustment.condition)
+            (self.multiply if adjustment.kind == MULTIPLY else self.add).setChecked(True)
+            self.amount.setValue(adjustment.amount)
+            self.name.setText(adjustment.name)
+        self._condition_changed()
+
+    def _kind_changed(self) -> None:
+        if self.multiply.isChecked() and self.amount.value() == 0:
+            self.amount.setValue(1.0)
+
+    def condition_value(self) -> Condition:
+        return self.picker.condition_value()
+
+    def _condition_changed(self) -> None:
+        self._ok.setEnabled(self.picker.complete)
+        self.guess.setEnabled(self._base_table is not None and self.picker.available)
         self.guess_info.clear()  # any earlier guess no longer matches this condition
 
     def _guess(self) -> None:
@@ -334,6 +385,63 @@ class AdjustmentDialog(QDialog):
                           self.amount.value(), self.name.text().strip())
 
 
+# --- Split by filter ---------------------------------------------------------------------------
+
+
+SNAPSHOT_NOTE = ("Membership is fixed when the neighborhood is created: changing a condition or "
+                 "characteristic later won't move parcels in or out.")
+
+
+class SplitDialog(QDialog):
+    """Split the parcels directly in a neighborhood that match a filter into a new child."""
+
+    def __init__(self, session: Session, neighborhood: int, parent=None):
+        super().__init__(parent)
+        model = session.neighborhoods
+        parent_name = model.neighborhoods[neighborhood].name
+        self.setWindowTitle(f"Split {parent_name} by filter")
+        self.resize(520, 560)
+        self._session = session
+        self.picker = ConditionPicker(session, np.flatnonzero(model.assignment == neighborhood))
+        self.name = QLineEdit()
+        self._name_edited = False
+        self.name.textEdited.connect(lambda _: setattr(self, "_name_edited", True))
+        intro = QLabel(f"Matching parcels directly in {parent_name} (not in its child neighborhoods) move into a "
+                       f"new child, which starts with a copy of {parent_name}'s land table.")
+        intro.setWordWrap(True)
+        note = QLabel(SNAPSHOT_NOTE)
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #888")
+
+        form = QFormLayout()
+        form.addRow("Parcels where:", self.picker)
+        form.addRow("New name:", self.name)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Split")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        layout = QVBoxLayout(self)
+        layout.addWidget(intro)
+        layout.addLayout(form, 1)
+        layout.addWidget(note)
+        layout.addWidget(buttons)
+
+        self.picker.changed.connect(self._condition_changed)
+        self._condition_changed()
+
+    def _condition_changed(self) -> None:
+        self._ok.setEnabled(self.picker.complete and self.picker.match_count() > 0)
+        if self.picker.available and not self._name_edited:
+            self.name.setText(self._session.describe_condition(self.condition_value()))
+
+    def condition_value(self) -> Condition:
+        return self.picker.condition_value()
+
+    def name_value(self) -> str:
+        return self.name.text().strip()
+
+
 # --- Panel -------------------------------------------------------------------------------------
 
 
@@ -341,6 +449,7 @@ class LandTablePanel(QWidget):
     neighborhoodChosen = Signal(int)
     applyRequested = Signal(int, object)  # neighborhood, LandTable | None
     applyToChildrenRequested = Signal(int)
+    convertRequested = Signal(int, int)  # neighborhood, adjustment position
 
     def __init__(self, session: Session, parent=None):
         super().__init__(parent)
@@ -390,6 +499,8 @@ class LandTablePanel(QWidget):
         self.adjustments.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.adjustments.verticalHeader().setVisible(False)
         self.adjustments.doubleClicked.connect(self._edit_adjustment)
+        self.adjustments.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.adjustments.customContextMenuRequested.connect(self._adjustment_menu)
         add = QPushButton("Add…")
         add.clicked.connect(self._add_adjustment)
         edit = QPushButton("Edit…")
@@ -577,6 +688,28 @@ class LandTablePanel(QWidget):
             adjustments = list(self.draft.adjustments)
             adjustments[row] = dialog.result_adjustment()
             self._set_adjustments(adjustments)
+
+    def _adjustment_menu(self, pos) -> None:
+        row = self.adjustments.rowAt(pos.y())
+        if row < 0 or self.draft is None:
+            return
+        self.adjustments.selectRow(row)
+        menu = QMenu(self)
+        menu.addAction("Edit…", self._edit_adjustment)
+        menu.addAction("Remove", self._remove_adjustment)
+        menu.addSeparator()
+        condition = self.draft.adjustments[row].condition
+        n = len(self.session.matching_parcels(self.neighborhood, condition))
+        if self.dirty:
+            convert = menu.addAction("Convert to child neighborhood (apply or revert changes first)")
+            convert.setEnabled(False)
+        elif n == 0:
+            convert = menu.addAction("Convert to child neighborhood (no matching parcels)")
+            convert.setEnabled(False)
+        else:
+            menu.addAction(f"Convert to child neighborhood ({n:,} parcels)…",
+                           lambda: self.convertRequested.emit(self.neighborhood, row))
+        menu.exec(self.adjustments.viewport().mapToGlobal(pos))
 
     def _remove_adjustment(self) -> None:
         row = self.adjustments.currentRow()

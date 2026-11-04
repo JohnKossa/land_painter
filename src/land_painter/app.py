@@ -207,6 +207,8 @@ class MainWindow(QMainWindow):
         self.popup = NeighborhoodPopup(self.session, self.land_panel, self.metrics_panel)
         self.popup.renameRequested.connect(self._rename_neighborhood)
         self.popup.deleteRequested.connect(self._delete_neighborhood)
+        self.popup.splitRequested.connect(self._split_neighborhood)
+        self.land_panel.convertRequested.connect(self._convert_adjustment)
         self.popup.show_neighborhood(self.selected)
 
         # A floating dock: it pops up beside the map, and can be docked if preferred.
@@ -252,6 +254,58 @@ class MainWindow(QMainWindow):
             self.selected = recipient
             self._assignment_changed()
             self._select(recipient)
+
+    def _split_neighborhood(self, index: int) -> None:
+        from .ui.land_table_panel import SplitDialog
+
+        if self.land_panel.dirty and self.land_panel.neighborhood == index:
+            QMessageBox.information(self, "Unapplied changes",
+                                    "Apply or revert your land table changes first: the new neighborhood "
+                                    "starts with a copy of this neighborhood's applied land table.")
+            return
+        dialog = SplitDialog(self.session, index, self)
+        if not dialog.exec():
+            return
+        child = self.session.split_neighborhood(index, dialog.condition_value(), dialog.name_value())
+        self._after_split(child)
+
+    def _convert_adjustment(self, neighborhood: int, position: int) -> None:
+        from .land_table import MULTIPLY, FlatRate
+        from .ui.land_table_panel import SNAPSHOT_NOTE
+
+        model = self.session.neighborhoods
+        parent = model.neighborhoods[neighborhood]
+        table = parent.table
+        if table is None or not 0 <= position < len(table.adjustments):
+            return
+        adjustment = table.adjustments[position]
+        n = len(self.session.matching_parcels(neighborhood, adjustment.condition))
+        where = self.session.describe_condition(adjustment.condition)
+        if adjustment.kind == MULTIPLY and isinstance(table.rate, FlatRate):
+            rate = table.rate.rate
+            table_text = (f"Its land table copies {parent.name}'s, with the {adjustment.describe()} adjustment folded "
+                          f"into the rate (${rate:,.4g} → ${rate * adjustment.amount:,.4g}).")
+        else:
+            table_text = (f"Its land table copies {parent.name}'s, keeping the {adjustment.describe()} adjustment "
+                          "(it applies to every parcel there).")
+        message = (f"Moves the {n:,} parcels directly in {parent.name} where {where} into a new child "
+                   f"neighborhood. {table_text} The adjustment is removed from {parent.name}. "
+                   f"Land values don't change.\n\n{SNAPSHOT_NOTE}\n\nName:")
+        name, ok = QInputDialog.getText(self, "Convert to child neighborhood", message,
+                                        text=adjustment.name or where)
+        if not ok:
+            return
+        child = self.session.convert_adjustment(neighborhood, position, name)
+        self._after_split(child)
+
+    def _after_split(self, child: int | None) -> None:
+        if child is None:
+            self.statusBar().showMessage("No parcels matched, so no neighborhood was created", 5000)
+            return
+        n = int((self.session.neighborhoods.assignment == child).sum())
+        name = self.session.neighborhoods.neighborhoods[child].name
+        self.statusBar().showMessage(f"Created {name} with {n:,} parcels", 5000)
+        self._assignment_changed()
 
     def _refresh_metrics(self) -> None:
         """Recompute the banner (county-wide) and the selected neighborhood's metrics."""

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from ..metrics import Metrics, Range, RatioStudy
+from ..metrics import MIN_SALES, Metrics, Range, RatioStudy
 
 UNDEFINED = "Undefined"
 GOOD, BAD = "#98c379", "#e5c07b"
@@ -89,15 +89,20 @@ class MetricsPanel(QWidget):
         for label in (self.spread, self.alloc_table, self.alloc_vacant, self.alloc_sales, self.over_price):
             label.setWordWrap(True)
 
-        self.evidence = QTableWidget(0, 4)
+        self.evidence = QTableWidget(0, 6)
         self.evidence.setHorizontalHeaderLabels(["Unit", "Vacant sales: price per unit", "Cost residual per unit",
-                                                 "COV (vacant)"])
+                                                 "Spread (vacant)", "Spread (improved)", "Score"])
         self.evidence.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.evidence.verticalHeader().setVisible(False)
         self.evidence.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.evidence.setToolTip("Ranges are min ≤ mean ≤ max. The cost residual (sale price − depreciated cost) is "
-                                 "also the land value implied by the sale-based allocation ratio.")
+        self.evidence.setToolTip(
+            "Ranges are min ≤ mean ≤ max. The cost residual (sale price − depreciated cost) is also the land value "
+            "implied by the sale-based allocation ratio.\n\n"
+            f"Spreads are the SD of log(value per unit) in percent (≈ COV), needing {MIN_SALES}+ sales; residuals "
+            "≤ 0 are left out.\nScore combines both groups, weighting each sale by 1 / its group's noise (the "
+            "group's lowest spread across units), around one shared mean. Lowest score is best.")
         self.best = QLabel()
+        self.best.setWordWrap(True)
         evidence_box = QGroupBox("Evidence")
         e_layout = QVBoxLayout(evidence_box)
         e_layout.addWidget(self.evidence)
@@ -146,6 +151,17 @@ class MetricsPanel(QWidget):
         self.evidence.setRowCount(len(m.evidence))
         for r, e in enumerate(m.evidence):
             label = e.unit + ("  ★" if e.unit == m.best_unit else "") + ("  (table)" if e.unit == table_unit else "")
-            for c, text in enumerate([label, range_text(e.vacant), range_text(e.residual), fmt(e.cov, 1)]):
+            improved = fmt(e.residual_spread, 1) + (f"  ({e.residuals_dropped:,} ≤ 0 left out)"
+                                                    if e.residuals_dropped else "")
+            for c, text in enumerate([label, range_text(e.vacant), range_text(e.residual),
+                                      fmt(e.vacant_spread, 1), improved, fmt(e.score, 1)]):
                 self.evidence.setItem(r, c, QTableWidgetItem(text))
-        self.best.setText(f"★ Best unit (lowest COV of vacant sale prices per unit): {m.best_unit or UNDEFINED}")
+        w = m.weights
+        if w.vacant_weight and w.improved_weight:
+            basis = (f"vacant noise {fmt(w.vacant_noise, 1)}, improved noise {fmt(w.improved_noise, 1)}; "
+                     f"each vacant sale counts {w.vacant_weight / w.improved_weight:.2f}× an improved sale")
+        elif w.vacant_weight or w.improved_weight:
+            basis = f"{'vacant' if w.vacant_weight else 'improved'} sales only (the other group has under {MIN_SALES})"
+        else:
+            basis = f"needs {MIN_SALES}+ vacant or improved sales"
+        self.best.setText(f"★ Best unit (lowest precision-weighted spread): {m.best_unit or UNDEFINED} — {basis}")
