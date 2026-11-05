@@ -66,6 +66,10 @@ class ImportConfig:
     sales: SalesMapping | None = None
     replacement_cost: list[ColumnRef] = field(default_factory=list)  # summed
     depreciated_cost: list[ColumnRef] = field(default_factory=list)  # summed
+    # Current roll values (optional, summed): what the existing assessment books as building and as
+    # land. Used to audit the roll's land/building split, not to compute land values.
+    roll_building_value: list[ColumnRef] = field(default_factory=list)
+    roll_land_value: list[ColumnRef] = field(default_factory=list)
     units: dict[str, ColumnRef] = field(default_factory=dict)  # unit name -> column
     neighborhood: ColumnRef | None = None
     cleaning: dict[str, Cleaning] = field(default_factory=dict)  # field id -> cleaning
@@ -105,6 +109,8 @@ class ImportConfig:
             self.attribute_keys[new] = self.attribute_keys.pop(old)
         self.replacement_cost = [move(r) for r in self.replacement_cost]
         self.depreciated_cost = [move(r) for r in self.depreciated_cost]
+        self.roll_building_value = [move(r) for r in self.roll_building_value]
+        self.roll_land_value = [move(r) for r in self.roll_land_value]
         self.units = {name: move(r) for name, r in self.units.items()}
         self.neighborhood = move(self.neighborhood)
         self.characteristic_kinds = {
@@ -128,6 +134,9 @@ class ImportConfig:
             sales=SalesMapping(**d["sales"]) if d["sales"] else None,
             replacement_cost=[ref(r) for r in d["replacement_cost"]],
             depreciated_cost=[ref(r) for r in d["depreciated_cost"]],
+            # Added later: sessions saved before then have neither
+            roll_building_value=[ref(r) for r in d.get("roll_building_value", [])],
+            roll_land_value=[ref(r) for r in d.get("roll_land_value", [])],
             units={k: ref(r) for k, r in d["units"].items()},
             neighborhood=ref(d["neighborhood"]),
             cleaning={k: Cleaning(**c) for k, c in d["cleaning"].items()},
@@ -140,6 +149,7 @@ class ImportConfig:
 
 SALE_PRICE, SALE_DATE, SALE_VACANT = "sale_price", "sale_date", "sale_vacant"
 REPLACEMENT_COST, DEPRECIATED_COST, NEIGHBORHOOD = "replacement_cost", "depreciated_cost", "neighborhood"
+ROLL_BUILDING, ROLL_LAND = "roll_building_value", "roll_land_value"
 
 
 def unit_field(name: str) -> str:
@@ -158,6 +168,13 @@ _PATTERNS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     SALE_VACANT: ((r"vacant_?sale|sale_?vacant", r"vacant"), (BOOLEAN, TEXT, *NUMERIC)),
     REPLACEMENT_COST: ((r"replacement", r"\brcn\b|^rcn_"), NUMERIC),
     DEPRECIATED_COST: ((r"depreciated", r"rcnld"), NUMERIC),
+    # Assessed / just / market values. Building-ish names that aren't costs; land values, not land areas.
+    ROLL_BUILDING: ((r"^(bldg|building|impr|improvement)s?_?(val|value|assessed|av|jv|just|mkt|market)$",
+                     r"(just|assessed|mkt|market|appr\w*)_?(bldg|building|impr\w*)",
+                     r"(bldg|building|impr\w*)_?(val|value|assessed|just|mkt|market)"), NUMERIC),
+    ROLL_LAND: ((r"^(lnd|land)_?(val|value|assessed|av|jv|just|mkt|market)$",
+                 r"(just|assessed|mkt|market|appr\w*)_?(lnd|land)(_?val\w*)?$",
+                 r"(lnd|land)_?(val|value|assessed|just|mkt|market)"), NUMERIC),
     unit_field("Area"): ((r"^land_?area_?sq_?ft$", r"land_?area", r"acre", r"area"), NUMERIC),
     unit_field("Road frontage"): ((r"total_?frontage", r"road_?frontage", r"^frontage"), NUMERIC),
     unit_field("Lake frontage"): ((r"lake\w*frontage|frontage\w*lake",), NUMERIC),

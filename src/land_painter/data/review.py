@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 
 from .config import (
-    DEPRECIATED_COST, FILL_MEDIAN, FILL_VALUE, FILL_ZERO, NEIGHBORHOOD, REPLACEMENT_COST,
+    DEPRECIATED_COST, FILL_MEDIAN, FILL_VALUE, FILL_ZERO, NEIGHBORHOOD, REPLACEMENT_COST, ROLL_BUILDING, ROLL_LAND,
     CATEGORICAL, CONTINUOUS, FLAG, UNUSED, WHEN,
     Cleaning, ColumnRef, ImportConfig, unit_field,
 )
@@ -227,6 +227,10 @@ def parcel_fields(config: ImportConfig) -> dict[str, list[ColumnRef]]:
         fields[REPLACEMENT_COST] = config.replacement_cost
     if config.depreciated_cost:
         fields[DEPRECIATED_COST] = config.depreciated_cost
+    if config.roll_building_value:
+        fields[ROLL_BUILDING] = config.roll_building_value
+    if config.roll_land_value:
+        fields[ROLL_LAND] = config.roll_land_value
     for name, ref in config.units.items():
         fields[unit_field(name)] = [ref]
     return fields

@@ -168,6 +168,16 @@ class MainWindow(QMainWindow):
         self.undo_action = action(edit_menu, "Undo", self.undo, QKeySequence.StandardKey.Undo)
         self.redo_action = action(edit_menu, "Redo", self.redo, QKeySequence.StandardKey.Redo)
 
+        tools_menu = self.menuBar().addMenu("&Tools")
+        action(tools_menu, "&Land/Building Split Check (current roll)…", self._split_check)
+
+    def _split_check(self) -> None:
+        from .ui.split_check import SplitCheckDialog
+
+        if getattr(self, "session", None) is None:
+            return
+        SplitCheckDialog(self.session, self).exec()
+
     def _build_sales_pane(self) -> None:
         from .ui.sales_pane import SalesPane, SalesTableModel
 
@@ -310,6 +320,7 @@ class MainWindow(QMainWindow):
     def _refresh_metrics(self) -> None:
         """Recompute the banner (county-wide) and the selected neighborhood's metrics."""
         from .metrics import compute
+        from .spatial import residual_autocorrelation
         from .ui.metrics_panel import banner_html
 
         if not hasattr(self, "metrics_panel"):
@@ -319,8 +330,10 @@ class MainWindow(QMainWindow):
         self.banner.setText(banner_html(compute(self.session, everything).ratio))
         table = model.neighborhoods[self.selected].table
         unit = table.unit if table else None
-        metrics = compute(self.session, model.assignment == self.selected, unit)
-        self.metrics_panel.show_metrics(model.neighborhoods[self.selected].name, metrics, unit)
+        mask = model.assignment == self.selected
+        metrics = compute(self.session, mask, unit)
+        spatial = residual_autocorrelation(self.session, mask)  # selected neighborhood only: not cheap county-wide
+        self.metrics_panel.show_metrics(model.neighborhoods[self.selected].name, metrics, unit, spatial)
 
     def _view_menu(self):
         if not hasattr(self, "_view"):

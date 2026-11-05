@@ -13,12 +13,18 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .data.config import DEPRECIATED_COST
+from .data.config import DEPRECIATED_COST, ROLL_LAND
 from .land_table import LOT
 from .sales import usable
 
 
 # --- Statistics -----------------------------------------------------------------------
+
+
+# Horizontal uniformity (CHD), after the Center for Land Economics' "Mass Appraisal for
+# the Masses": no official standard, so these are its rules of thumb.
+CHD_TARGET = 15.0  # median CHD at or below this is good
+CHD_MIN_PARCELS = 15  # fewer parcels make a CHD unreliable
 
 
 @dataclass
@@ -137,6 +143,28 @@ class UnitEvidence:
     residual_spread: float | None = None  # same for positive residuals per unit
     residuals_dropped: int = 0  # improved sales with a residual ≤ 0 (no log), left out of the spreads
     score: float | None = None  # precision-weighted spread of both groups, percent; lowest is best
+    roll: Range | None = None  # previous roll land value / units across the parcels; a reference, not scored
+
+
+# Previous roll comparison. A parcel whose land value moved more than this
+# share either way counts as a big mover. One constant for now; meant to
+# become a user setting.
+MOVE_THRESHOLD = 0.25
+
+
+@dataclass
+class RollComparison:
+    """This neighborhood's land values against the previous roll's (when roll land value is mapped)."""
+    n_compared: int  # parcels with both a positive roll value and a new land value
+    n_no_roll: int  # parcels with a new land value but no positive roll value
+    n_no_value: int  # parcels with a positive roll value but no new land value
+    median_change: float | None  # median of new / roll − 1
+    q25: float | None
+    q75: float | None
+    threshold: float
+    n_up: int  # change > +threshold
+    n_down: int  # change < −threshold
+    roll_ratio: RatioStudy  # the roll's land values against the same vacant sales
 
 
 @dataclass
@@ -159,8 +187,8 @@ class Metrics:
     n_vacant: int  # usable vacant sales in scope
     n_improved: int  # usable improved sales in scope
     ratio: RatioStudy  # vacant sales with a land value
-    spread_unit: str | None  # unit used for the land value spread
-    spread_cod: float | None  # COD of land value per unit across parcels
+    spread_unit: str | None  # unit used for the CHD (and the vacant-sales allocation)
+    chd: float | None  # coefficient of horizontal dispersion: COD of land value per unit across parcels
     allocation_table: float | None  # median land allocation of built parcels, land from the land table
     allocation_vacant: float | None  # same, land from vacant sales' mean price per unit
     allocation_sales: float | None  # median (price − cost) / price of improved sales
@@ -169,6 +197,8 @@ class Metrics:
     evidence: list[UnitEvidence] = field(default_factory=list)
     best_unit: str | None = None  # lowest precision-weighted spread (UnitEvidence.score)
     weights: UnitWeights = field(default_factory=UnitWeights)
+    chd_n: int = 0  # parcels in the CHD (a land value and positive units)
+    roll: RollComparison | None = None  # None when roll land value isn't mapped
 
     @property
     def has_cost(self) -> bool:
@@ -227,12 +257,38 @@ def _unit_evidence(dataset, sale_parcel, price, cost, vacant_sales: np.ndarray,
     return evidence, best_unit, weights
 
 
-def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.ndarray | None = None) -> Metrics:
+def roll_land_values(dataset) -> np.ndarray | None:
+    """The previous roll's land value per parcel (NaN where missing), or None if not mapped."""
+    if ROLL_LAND not in dataset.parcels.columns:
+        return None
+    return dataset.parcels[ROLL_LAND].cast(float).fill_null(np.nan).to_numpy()
+
+
+def roll_comparison(roll: np.ndarray, land: np.ndarray, parcels: np.ndarray, vacant_land_roll: np.ndarray,
+                    vacant_price: np.ndarray, threshold: float = MOVE_THRESHOLD) -> RollComparison:
+    """Compare new land values with the roll's on ``parcels``; the roll's ratio study on the given sales."""
+    old, new = roll[parcels], land[parcels]
+    with np.errstate(invalid="ignore"):
+        has_old, has_new = old > 0, ~np.isnan(new)
+        both = has_old & has_new  # a new value of 0 is a real −100% move
+    change = new[both] / old[both] - 1
+    q25, median, q75 = (float(q) for q in np.percentile(change, [25, 50, 75])) if len(change) else (None,) * 3
+    with np.errstate(invalid="ignore"):
+        priced = vacant_land_roll > 0
+    return RollComparison(int(both.sum()), int((has_new & ~has_old).sum()), int((has_old & ~has_new).sum()),
+                          median, q25, q75, threshold, int((change > threshold).sum()),
+                          int((change < -threshold).sum()),
+                          ratio_study(vacant_land_roll[priced], vacant_price[priced]))
+
+
+def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.ndarray | None = None,
+            move_threshold: float = MOVE_THRESHOLD) -> Metrics:
     """Metrics for the parcels in ``parcel_mask`` (and the sales on them).
 
     ``unit`` is the land table's unit of measure, used for the land value
     spread and the vacant-sales allocation; None picks the best unit.
     ``land`` overrides the session's land values (e.g. to preview a draft).
+    ``move_threshold`` is the change from the previous roll that counts as a big mover.
     """
     dataset = session.dataset
     land = session.land_values if land is None else land
@@ -263,12 +319,12 @@ def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.
     else:
         ratio = ratio_study(np.zeros(0), np.zeros(0))
 
-    # Spread: COD of land value per unit across parcels
+    # CHD (horizontal uniformity): COD of land value per unit across parcels, sales not needed
     parcels = np.flatnonzero(parcel_mask)
     units = dataset.unit_values(unit)[parcels]
     p_land = land[parcels]
     spread_ok = ~np.isnan(p_land) & (units > 0)
-    spread_cod = cod(p_land[spread_ok] / units[spread_ok])
+    chd = cod(p_land[spread_ok] / units[spread_ok])
 
     # Allocation ratios
     allocation_table = allocation_vacant = allocation_sales = None
@@ -299,9 +355,23 @@ def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.
         checked = int(valued.sum())
         over = int((s_land[valued] > price[all_sales][valued]).sum())
 
-    return Metrics(len(parcels), len(vacant_sales), len(improved_sales), ratio, unit, spread_cod,
+    # Previous roll: per-unit reference ranges, and how far values moved
+    roll = roll_land_values(dataset)
+    comparison = None
+    if roll is not None:
+        p_roll = roll[parcels]
+        for e in evidence:
+            e_units = dataset.unit_values(e.unit)[parcels]
+            with np.errstate(invalid="ignore"):
+                ok = (p_roll > 0) & (e_units > 0)
+            e.roll = value_range(p_roll[ok] / e_units[ok])
+        v_parcels = sale_parcel[vacant_sales] if len(vacant_sales) else np.zeros(0, dtype=np.int64)
+        v_price = price[vacant_sales] if len(vacant_sales) else np.zeros(0)
+        comparison = roll_comparison(roll, land, parcels, roll[v_parcels], v_price, move_threshold)
+
+    return Metrics(len(parcels), len(vacant_sales), len(improved_sales), ratio, unit, chd,
                    allocation_table, allocation_vacant, allocation_sales, over, checked, evidence, best_unit,
-                   weights)
+                   weights, int(spread_ok.sum()), comparison)
 
 
 def per_unit_land_evidence(session, parcel_mask: np.ndarray, unit: str) -> np.ndarray:

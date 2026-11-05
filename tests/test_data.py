@@ -3,7 +3,7 @@ import pytest
 
 from land_painter.data.config import (
     CATEGORICAL, CONTINUOUS, DEPRECIATED_COST, FILL_MEDIAN, FILL_VALUE, ROLE_ATTRIBUTES, ROLE_PARCELS,
-    ROLE_SALES, SALE_PRICE, Cleaning, ColumnRef, FileSpec, ImportConfig, SalesMapping,
+    ROLE_SALES, ROLL_BUILDING, ROLL_LAND, SALE_PRICE, Cleaning, ColumnRef, FileSpec, ImportConfig, SalesMapping,
     suggest, suggest_roles, unit_field,
 )
 from land_painter.data.dataset import build_dataset
@@ -166,3 +166,40 @@ def test_characteristic_profiles(config, files):
     assert profiles[(parcels, "tract")].suggested == CATEGORICAL and "numbers" in profiles[(parcels, "tract")].review
     assert profiles[(parcels, "area")].review.startswith("Only 3 distinct")
     assert profiles[(files["costs"], "bldg_cost")].suggested == CONTINUOUS
+
+
+def test_roll_values_are_optional_mapped_fields(config, files):
+    c = files["costs"]
+    config.roll_building_value = [ColumnRef(c, "bldg_cost"), ColumnRef(c, "shed_cost")]
+    config.roll_land_value = [ColumnRef(files["parcels"], "area")]
+    assert ImportConfig.from_json(config.to_json()) == config
+    config.relocate(c, "new.csv")
+    assert {r.file for r in config.roll_building_value} == {"new.csv"}
+
+
+def test_roll_values_are_read_and_summed(config, files):
+    config.roll_building_value = [ColumnRef(files["costs"], "bldg_cost"), ColumnRef(files["costs"], "shed_cost")]
+    prepared = prepare(config)
+    assert prepared.parcels[ROLL_BUILDING].to_list()[:3] == [10.0, 100.0, 210.0]
+    assert ROLL_LAND not in prepared.parcels.columns  # not mapped, so absent
+
+
+def test_sessions_saved_before_roll_values_still_load(config):
+    import json
+
+    old = json.loads(config.to_json())
+    del old["roll_building_value"], old["roll_land_value"]
+    loaded = ImportConfig.from_json(json.dumps(old))
+    assert loaded.roll_building_value == [] and loaded.roll_land_value == []
+
+
+@pytest.mark.parametrize("columns, building, land", [
+    (["BLDG_VAL", "LAND_VAL", "LAND_AREA", "BLDG_COST"], "BLDG_VAL", "LAND_VAL"),
+    (["just_land", "just_bldg", "land_sqft"], "just_bldg", "just_land"),
+    (["ImprovementValue", "LandValue", "LandArea"], "ImprovementValue", "LandValue"),
+    (["land_area", "depreciated_cost", "acres"], None, None),
+])
+def test_roll_value_suggestions(columns, building, land):
+    kinds = {name: "number" for name in columns}
+    assert suggest(ROLL_BUILDING, kinds) == building
+    assert suggest(ROLL_LAND, kinds) == land

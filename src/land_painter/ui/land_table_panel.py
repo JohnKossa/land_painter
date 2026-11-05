@@ -18,7 +18,7 @@ from ..data.config import CONTINUOUS
 from ..land_table import ADD, IN, LOT, MULTIPLY, OPS, Adjustment, Condition, FlatRate, LandTable, evaluate
 from ..metrics import compute, per_unit_land_evidence
 from ..session import Session
-from .metrics_panel import ratio_html
+from .metrics_panel import ratio_html, roll_change_html
 
 
 def _money(value: float) -> str:
@@ -507,8 +507,12 @@ class LandTablePanel(QWidget):
         edit.clicked.connect(self._edit_adjustment)
         remove = QPushButton("Remove")
         remove.clicked.connect(self._remove_adjustment)
+        check = QPushButton("Check against market…")
+        check.setToolTip("Is the selected adjustment's amenity premium booked as land or as building, and does it\n"
+                         "match what the market pays? (Land/building allocation test.)")
+        check.clicked.connect(self._check_adjustment)
         adj_buttons = QHBoxLayout()
-        for b in (add, edit, remove):
+        for b in (add, edit, remove, check):
             adj_buttons.addWidget(b)
         adj_buttons.addStretch()
         adj_box = QGroupBox("Adjustments (multipliers apply first, then additions)")
@@ -640,8 +644,11 @@ class LandTablePanel(QWidget):
             land[parcels] = preview
             mask = np.zeros(len(land), dtype=bool)
             mask[parcels] = True
-            study = compute(self.session, mask, table.unit if table else None, land).ratio
-            self.draft_summary.setText(summarize(preview) + "<br>Ratio study: " + ratio_html(study))
+            m = compute(self.session, mask, table.unit if table else None, land)
+            text = summarize(preview) + "<br>Ratio study: " + ratio_html(m.ratio)
+            if m.roll is not None:
+                text += "<br>Change from previous roll: " + roll_change_html(m.roll)
+            self.draft_summary.setText(text)
         else:
             self.draft_summary.setText("(no unapplied changes)")
         self.apply_button.setEnabled(self.dirty)
@@ -697,6 +704,7 @@ class LandTablePanel(QWidget):
         menu = QMenu(self)
         menu.addAction("Edit…", self._edit_adjustment)
         menu.addAction("Remove", self._remove_adjustment)
+        menu.addAction("Check against market…", self._check_adjustment)
         menu.addSeparator()
         condition = self.draft.adjustments[row].condition
         n = len(self.session.matching_parcels(self.neighborhood, condition))
@@ -710,6 +718,16 @@ class LandTablePanel(QWidget):
             menu.addAction(f"Convert to child neighborhood ({n:,} parcels)…",
                            lambda: self.convertRequested.emit(self.neighborhood, row))
         menu.exec(self.adjustments.viewport().mapToGlobal(pos))
+
+    def _check_adjustment(self) -> None:
+        from .amenity_check import AmenityCheckDialog
+
+        row = self.adjustments.currentRow()
+        if row < 0 or self.draft is None:
+            return
+        adjustment = self.draft.adjustments[row]
+        AmenityCheckDialog(self.session, self.neighborhood, self.draft, adjustment,
+                           self.adjustments.item(row, 0).text(), parent=self).exec()
 
     def _remove_adjustment(self) -> None:
         row = self.adjustments.currentRow()

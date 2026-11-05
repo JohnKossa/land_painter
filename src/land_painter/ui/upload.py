@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from ..data.config import (
     CHARACTERISTIC_KINDS, DEFAULT_UNITS, DEPRECIATED_COST, FILL_MEDIAN, FILL_NONE, FILL_VALUE, FILL_ZERO,
-    MISSING_RULES, NEIGHBORHOOD, REPLACEMENT_COST, ROLE_ATTRIBUTES, ROLE_PARCELS, ROLE_SALES, SALE_DATE,
+    MISSING_RULES, NEIGHBORHOOD, REPLACEMENT_COST, ROLL_BUILDING, ROLL_LAND, ROLE_ATTRIBUTES, ROLE_PARCELS, ROLE_SALES, SALE_DATE,
     SALE_PRICE, SALE_VACANT, Cleaning, ColumnRef, FileSpec, ImportConfig, SalesMapping, suggest,
     suggest_roles, unit_field,
 )
@@ -359,6 +359,26 @@ class ColumnsPage(QWizardPage):
         form.addRow("Depreciated cost:", self.depreciated)
         layout.addWidget(costs)
 
+        # Current roll values
+        roll = QGroupBox("Current roll values (optional; several columns are summed)")
+        form = QFormLayout(roll)
+        self.roll_building = ColumnMultiPicker(cost_options)
+        self.roll_land = ColumnMultiPicker(cost_options)
+        for picker, field_id in ((self.roll_building, ROLL_BUILDING), (self.roll_land, ROLL_LAND)):
+            suggestion = self._suggested(field_id, cost_options)
+            picker.set_refs([suggestion] if suggestion else [])
+        form.addRow("Assessed building value:", self.roll_building)
+        form.addRow("Assessed land value:", self.roll_land)
+        note = QLabel("The existing assessment's split of value between building and land. Used only to audit "
+                      "that split (is location value booked as building?) and to compare the roll with your "
+                      "land tables; it never sets land values. The building audit compares against the "
+                      "depreciated cost above, so it's only meaningful if that cost is location-free (cost "
+                      "book only, no neighborhood or market factor).")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #888")
+        form.addRow(note)
+        layout.addWidget(roll)
+
         # Units of measure
         self.units_box = QGroupBox("Units of measure (lot is automatic: every parcel is 1 lot)")
         self.units_form = QFormLayout(self.units_box)
@@ -423,6 +443,8 @@ class ColumnsPage(QWizardPage):
         """Re-apply earlier choices where the columns still exist."""
         self.replacement.set_refs(config.replacement_cost)
         self.depreciated.set_refs(config.depreciated_cost)
+        self.roll_building.set_refs(config.roll_building_value)
+        self.roll_land.set_refs(config.roll_land_value)
         for name, ref in config.units.items():
             if name not in self.unit_combos:
                 self._add_unit_row(name)
@@ -455,6 +477,8 @@ class ColumnsPage(QWizardPage):
             sales=sales,
             replacement_cost=self.replacement.refs(),
             depreciated_cost=self.depreciated.refs(),
+            roll_building_value=self.roll_building.refs(),
+            roll_land_value=self.roll_land.refs(),
             units={name: combo.ref() for name, combo in self.unit_combos.items() if combo.ref() is not None},
             neighborhood=self.neighborhood.ref(),
         )
@@ -565,9 +589,11 @@ class ReviewPage(QWizardPage):
             rows += [(SALE_PRICE, "Sale price", config.sales.price, prepared.sales["price"]),
                      (SALE_DATE, "Sale date", config.sales.date, prepared.sales["date"]),
                      (SALE_VACANT, "Vacant indicator", config.sales.vacant, prepared.sales["vacant"])]
-        sources = {REPLACEMENT_COST: config.replacement_cost, DEPRECIATED_COST: config.depreciated_cost}
+        sources = {REPLACEMENT_COST: config.replacement_cost, DEPRECIATED_COST: config.depreciated_cost,
+                   ROLL_BUILDING: config.roll_building_value, ROLL_LAND: config.roll_land_value}
         sources.update({unit_field(name): [ref] for name, ref in config.units.items()})
-        labels = {REPLACEMENT_COST: "Replacement cost", DEPRECIATED_COST: "Depreciated cost"}
+        labels = {REPLACEMENT_COST: "Replacement cost", DEPRECIATED_COST: "Depreciated cost",
+                  ROLL_BUILDING: "Roll building value", ROLL_LAND: "Roll land value"}
         for field_id, refs in sources.items():
             if refs:
                 label = labels.get(field_id, field_id.removeprefix("unit:"))

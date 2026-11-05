@@ -93,7 +93,8 @@ def test_metrics_with_land_table(session):
     m = compute(session, everything(session), "Area")
     # ratio study on vacant sales: 1000/1000 and 2000/2400
     assert m.ratio.n == 2 and m.ratio.median == pytest.approx(np.median([1.0, 2000 / 2400]))
-    assert m.spread_cod == 0.0  # value per sqft is 10 everywhere (parcel with 0 area is skipped)
+    assert m.chd == 0.0  # value per sqft is 10 everywhere (parcel with 0 area is skipped)
+    assert m.chd_n == 5
     # built parcels 2, 3, 4: land 1000, 4000, 1000 vs cost 50, 100, 300
     assert m.allocation_table == pytest.approx(np.median([1000 / 1050, 4000 / 4100, 1000 / 1300]))
     # vacant-sales rate: mean(10, 12) = 11 per sqft

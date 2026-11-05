@@ -69,6 +69,11 @@ Other inputs (CSVs):
 * Cost values — building-only costs (excluding land), in dollars:
   * replacement cost
   * depreciated cost
+* Current roll values (optional), in dollars, each possibly summed from several columns:
+  * assessed building value (e.g. main building + extra features)
+  * assessed land value
+  
+  Used only to audit the existing assessment's land/building split (whether location value is booked as building) and to compare the roll with the app's land tables. They never set land values. The building audit divides roll building value by depreciated cost, so it's only meaningful when the mapped depreciated cost is location-free (cost book only, no neighborhood or market factor). Sessions saved before these fields existed load with them unmapped.
 * Any other relevant data
 
 Sale prices are assumed to already be time-adjusted by the user. The application does not perform time adjustment.
@@ -201,9 +206,22 @@ Spread of land values in the region is measured by **COD**.
 * **Scope:** a neighborhood's metrics use the parcels directly in it (the parcels its land table values) and the sales on those parcels. The always-visible banner uses all vacant sales county-wide.
 * **Sales used:** not disqualified, with a positive price and a known vacant/improved value. The ratio study additionally needs the parcel to have a land value.
 * **PRB:** IAAO regression of (ratio − median) / median on log₂ of the value proxy ½·price + ½·(land value / median ratio).
-* **Spread:** COD of land value per unit (the land table's unit) across the neighborhood's parcels with a land value and positive units.
+* **CHD (coefficient of horizontal dispersion):** COD of land value per unit (the land table's unit) across the neighborhood's parcels with a land value and positive units. It needs no sales, so it measures horizontal uniformity (similar land valued alike) where the ratio study can't. Highlighted above 15, and flagged as unreliable with fewer than 15 parcels. Both are rules of thumb from the Center for Land Economics' "Mass Appraisal for the Masses", not an IAAO standard.
+* **Spatial clustering of ratios (residual spatial autocorrelation):** for the selected neighborhood only. Uses the ratio study's sales (usable vacant sales with a positive land value). Residual = ln(land value / price) − the neighborhood's median ln ratio. ρ = correlation of each residual with the mean residual of its 8 nearest sales in the neighborhood (fewer if it has fewer sales), never counting a sale on the same parcel. One-sided p-value from 999 permutations of the residuals among the neighborhood's sales (fixed seed). A time-controlled ρ excludes neighbors sold within 90 days, refilling with the next-nearest; pairs with a missing date are kept. Highlighted at p < 0.05. Not computed for the county-wide banner or the land table draft preview.
+* **Check against market (amenity allocation):** on demand, from an adjustment in the land table panel. The adjustment's condition is the amenity. On the same usable improved sales (with a land value, a positive depreciated cost and every chosen control), fits ln(sale price), ln(land value) and ln(depreciated cost) on the amenity indicator plus the chosen controls. Controls are units and continuous characteristics, entered as ln(x) when all positive, else linearly. The default control is the table's unit unless it's Lot. "All neighborhoods" adds neighborhood fixed effects (within-neighborhood demeaning); "this neighborhood only" uses none. Land values include the neighborhood's draft table. Each coefficient is reported as e^β − 1 with a 95% range, and in dollars at the sample median. Building share = building $ ÷ (land $ + building $), undefined when the two have opposite signs. The assessed premium (land $ + building $) is compared with the market premium. Highlighted: a building share over 50%, an assessed premium outside 75–125% of the market or of opposite sign, and a market range that spans 0.
+* **Land/building split check (current roll; Tools menu, on demand):** needs roll building value and depreciated cost. Parcels are grouped by the imported neighborhood codes (default, when mapped) or the session's neighborhoods. Groups with fewer than 5 qualifying parcels are left out.
+  * **5a:** improved parcels with a positive roll building value and depreciated cost. ratio_b = roll building ÷ depreciated cost. One-way ANOVA of ln(ratio_b) by group gives η², ω² (adjusted) and a one-way random-effects ICC. ω² is highlighted at 0.06 or above (Cohen's "medium").
+  * **5b:** the same decomposition for ln(roll land value per unit) on the same parcels. The session's land tables are shown alongside for reference. Leakage = building ω² ÷ roll land ω², highlighted at 0.75 or above (location split across both components).
+  * A per-neighborhood table (median building ratio, median roll and session land per unit) is sorted by building ratio, so the neighborhoods where land is most likely under-booked come first.
 * **Allocation ratios** are reported as the median across built parcels (depreciated cost > 0), or across improved sales for the sale-based ratio. The vacant-sales version uses the **mean** vacant sale price per unit (the spec's "average").
 * **Land value in excess of sale price:** count of usable sales (vacant and improved) whose parcel's land value exceeds the sale price.
+* **Previous roll** (shown when roll land value is mapped), for the neighborhood's parcels:
+  * Change: new ÷ roll − 1 per parcel with a positive roll value and a new land value (a new value of $0 counts as −100%). Reported as the median and middle half.
+  * Big movers: parcels changing more than ±25% either way, split up and down. The threshold is one constant (`MOVE_THRESHOLD`), passed as a parameter so it can become a user setting.
+  * Coverage: parcels with no roll value, and parcels with a roll value but no new land value.
+  * The roll's ratio study on the same vacant sales. It appears as a second row ("Previous roll") under "Land tables" in the neighborhood's ratio study table, so each statistic is shown once and the two compare head to head. Without roll values, the table has only the land tables row.
+  * The land table panel's draft preview also shows the change from the roll.
+  * The evidence table gains a "Previous roll: land per unit" range per unit. It's a reference, not market evidence, so it doesn't count toward the score or the best unit. The column is hidden when roll land value isn't mapped.
 * **Evidence** ranges are shown for every unit of measure, so the best unit can be compared. Cost residual and sale-based allocation evidence are one row, since they are the same quantity.
 * **Highlighting:** ratio statistics outside IAAO ranges are highlighted: median 0.90–1.10, COD ≤ 25 (vacant land), PRD 0.98–1.03, PRB −0.05 to 0.05.
 * While a land table is being edited, the draft's ratio study is previewed before it is applied.
