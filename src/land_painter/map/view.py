@@ -25,6 +25,8 @@ class MapBridge(QObject):
     salesChanged = Signal(int)  # version; the map re-fetches sale points and colors
     highlightRings = Signal(str)  # JSON list of [start, end) vertex ranges to outline; "[]" clears
     flyTo = Signal(float, float, float)  # longitude, latitude, zoom
+    focusChanged = Signal(int)  # version; the map re-fetches the per-part focus mask (empty = no focus)
+    fitBounds = Signal(float, float, float, float)  # min lng, min lat, max lng, max lat
 
     # JS -> Python (re-emitted from slots so Python code can connect normally)
     ready = Signal()

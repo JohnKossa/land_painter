@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMessageBox, QVBoxLayout, QWidget,
 )
 import numpy as np
+import shapely
 
 from .data.dataset import build_dataset
 from .data.review import DataError
@@ -97,6 +98,8 @@ class MainWindow(QMainWindow):
         self.layer = session.layer
         self.selected = ROOT
         self._version = 0
+        self._focus_parts = b""  # per-part focus mask for the map (empty = no focus)
+        self._focus_version = 0
 
         self.banner = QLabel()
         self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -118,6 +121,7 @@ class MainWindow(QMainWindow):
         if session.dataset.sales is not None:
             self._build_sales_pane()
         self._build_neighborhood_popup()
+        self._build_compare_pane()
         self._refresh_metrics()
 
         handler = self.map.scheme_handler
@@ -129,6 +133,7 @@ class MainWindow(QMainWindow):
         handler.provide("assignment", self._part_assignment)
         handler.provide("sale_points", self._sale_points)
         handler.provide("sale_colors", self._sale_colors)
+        handler.provide("focus", lambda: self._focus_parts)
 
         bridge = self.map.bridge
         bridge.partClicked.connect(self._on_part_clicked)
@@ -202,7 +207,27 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.resizeDocks([dock], [620], Qt.Orientation.Horizontal)
         self._view_menu().addAction(dock.toggleViewAction())
+        self.sales_dock = dock
         self._update_sales_neighborhood()
+
+    def _build_compare_pane(self) -> None:
+        from .ui.compare_pane import ComparePane
+
+        self.compare_pane = ComparePane(self.session)
+        self.compare_pane.map_selection = self.selected
+        self.compare_pane.focusRequested.connect(self._focus_parcels)
+        self.compare_pane.zoomRequested.connect(self._zoom_to_parcels)
+        dock = QDockWidget("Compare", self)
+        dock.setObjectName("compare")
+        dock.setWidget(self.compare_pane)
+        sales_dock = getattr(self, "sales_dock", None)
+        if sales_dock is not None:
+            self.tabifyDockWidget(sales_dock, dock)  # a tab beside Sales
+            sales_dock.raise_()  # Sales stays the tab shown first
+        else:
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            self.resizeDocks([dock], [620], Qt.Orientation.Horizontal)
+        self._view_menu().addAction(dock.toggleViewAction())
 
     def _build_neighborhood_popup(self) -> None:
         from .ui.land_table_panel import LandTablePanel
@@ -355,8 +380,34 @@ class MainWindow(QMainWindow):
         self.land_panel.reload()
         if self.sales_pane is not None:
             self.sales_pane.model.refresh()
+        self._compare_data_changed()
         self._refresh_metrics()
         self._refresh_chrome()
+
+    def _focus_parcels(self, parcels) -> None:
+        """Make ``parcels`` stand out on the map and fade the rest; None or empty clears the focus."""
+        if parcels is None or not len(parcels):
+            self._focus_parts = b""
+        else:
+            mask = np.zeros(self.layer.n_parcels, dtype=bool)
+            mask[parcels] = True
+            self._focus_parts = mask[self.layer.part_parcel].astype(np.uint8).tobytes()
+        self._focus_version += 1
+        self.map.bridge.focusChanged.emit(self._focus_version)
+
+    def _zoom_to_parcels(self, parcels) -> None:
+        if parcels is None or not len(parcels):
+            return
+        mask = np.zeros(self.layer.n_parcels, dtype=bool)
+        mask[parcels] = True
+        bounds = shapely.bounds(self.layer.parts[mask[self.layer.part_parcel]])
+        self.map.bridge.fitBounds.emit(float(bounds[:, 0].min()), float(bounds[:, 1].min()),
+                                       float(bounds[:, 2].max()), float(bounds[:, 3].max()))
+
+    def _compare_data_changed(self) -> None:
+        """Land values, neighborhoods or sale flags changed (the Compare tab recomputes only while shown)."""
+        if hasattr(self, "compare_pane"):
+            self.compare_pane.data_changed()
 
     def _refresh_chrome(self) -> None:
         path = self.session.path
@@ -493,6 +544,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "land_panel"):
             self.land_panel.reload()
             self.popup.show_neighborhood(self.selected)
+        self._compare_data_changed()
         self._refresh_metrics()
         self._refresh_chrome()
 
@@ -524,6 +576,7 @@ class MainWindow(QMainWindow):
         if self.session.set_sale_flags(sales, flag):
             self.sales_pane.flags_changed()
             self._sales_changed()
+            self._compare_data_changed()
             self._refresh_metrics()
             self._refresh_chrome()
 
@@ -561,6 +614,8 @@ class MainWindow(QMainWindow):
 
     def _select(self, neighborhood: int) -> None:
         self.selected = neighborhood
+        if hasattr(self, "compare_pane"):
+            self.compare_pane.map_selection = neighborhood
         self.statusBar().showMessage(f"Selected {self.session.neighborhoods.neighborhoods[neighborhood].name}", 5000)
         self.map.bridge.selectionChanged.emit(neighborhood)
         self._update_sales_neighborhood()

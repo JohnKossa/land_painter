@@ -10,6 +10,10 @@ const OUTLINE_MIN_ZOOM = 15;
 // Parcels are drawn translucent so the basemap shows through for orientation.
 const ALPHA_SELECTED = 165;
 const ALPHA_OTHER = 75;
+// Focus (parcels linked from a Compare bar): focused parcels stand out, the rest fade.
+const ALPHA_FOCUS = 230;
+const ALPHA_UNFOCUSED = 18;
+const FIT_MAX_ZOOM = 18;
 
 // TEMPORARY: online basemap for testing. The SPEC mandates a local, offline
 // basemap (PMTiles); this online source is a testing-phase convenience and must
@@ -32,6 +36,7 @@ const state = {
   basemap: [],        // basemap tile URL templates from meta (empty = no basemap)
   highlight: [],      // [{path}] outlines of the highlighted parcel
   partNbhd: null,     // Uint16Array, neighborhood index per part
+  focus: null,        // Uint8Array per part (1 = focused), or null when nothing is focused
   palette: [],        // [{name, parent, color}]
   selected: 0,
   colorVersion: 0,
@@ -49,7 +54,7 @@ async function fetchArray(name, Type) {
 }
 
 function buildColors() {
-  const {starts, partNbhd, palette, selected} = state;
+  const {starts, partNbhd, palette, selected, focus} = state;
   const lut = new Uint8Array(palette.length * 4);
   palette.forEach((n, i) => {
     lut.set(n.color, i * 4);
@@ -59,7 +64,9 @@ function buildColors() {
   const colors = new Uint8Array(starts[nParts] * 4);
   for (let p = 0; p < nParts; p++) {
     const o = partNbhd[p] * 4;
-    const r = lut[o], g = lut[o + 1], b = lut[o + 2], a = lut[o + 3];
+    const r = lut[o], g = lut[o + 1], b = lut[o + 2];
+    // While a focus is shown it decides the alpha; otherwise the selection does.
+    const a = focus ? (focus[p] ? ALPHA_FOCUS : ALPHA_UNFOCUSED) : lut[o + 3];
     for (let v = starts[p] * 4, end = starts[p + 1] * 4; v < end; v += 4) {
       colors[v] = r; colors[v + 1] = g; colors[v + 2] = b; colors[v + 3] = a;
     }
@@ -195,6 +202,22 @@ function onFlyTo(longitude, latitude, zoom) {
     longitude, latitude, zoom, pitch: 0, bearing: 0,
     transitionDuration: 700, transitionInterpolator: new FlyToInterpolator(),
   }});
+}
+
+async function onFocusChanged(version) {
+  const mask = await fetchArray(`focus?v=${version}`, Uint8Array);
+  state.focus = mask.length ? mask : null;
+  recolor();
+}
+
+function onFitBounds(minLng, minLat, maxLng, maxLat) {
+  const canvas = state.deck.getCanvas();
+  const viewport = new WebMercatorViewport({width: canvas.clientWidth, height: canvas.clientHeight});
+  // A single parcel (or a tiny area) still gets a little room around it
+  const pad = 0.0005;
+  const {longitude, latitude, zoom} = viewport.fitBounds(
+    [[minLng - pad, minLat - pad], [maxLng + pad, maxLat + pad]], {padding: 40});
+  onFlyTo(longitude, latitude, Math.min(zoom, FIT_MAX_ZOOM));
 }
 
 function onSelectionChanged(index) {
@@ -369,6 +392,8 @@ new QWebChannel(qt.webChannelTransport, (channel) => {
   state.bridge.salesChanged.connect((v) => { if (state.deck) onSalesChanged(v); });
   state.bridge.highlightRings.connect(onHighlightRings);
   state.bridge.flyTo.connect(onFlyTo);
+  state.bridge.focusChanged.connect((v) => { if (state.deck) onFocusChanged(v); });
+  state.bridge.fitBounds.connect((a, b, c, d) => { if (state.deck) onFitBounds(a, b, c, d); });
   state.bridge.jsReady();
   loadData().catch((error) => {
     setStatus(`Failed to load: ${error}`);
