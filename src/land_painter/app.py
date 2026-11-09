@@ -243,6 +243,7 @@ class MainWindow(QMainWindow):
         self.popup.renameRequested.connect(self._rename_neighborhood)
         self.popup.deleteRequested.connect(self._delete_neighborhood)
         self.popup.splitRequested.connect(self._split_neighborhood)
+        self.popup.mergeRequested.connect(self._merge_neighborhood)
         self.land_panel.convertRequested.connect(self._convert_adjustment)
         self.popup.show_neighborhood(self.selected)
 
@@ -289,6 +290,20 @@ class MainWindow(QMainWindow):
             self.selected = recipient
             self._assignment_changed()
             self._select(recipient)
+
+    def _merge_neighborhood(self, index: int) -> None:
+        from .ui.neighborhood_popup import MergeDialog
+
+        dialog = MergeDialog(self.session, index, self)
+        if dialog.exec():
+            destination = dialog.chosen()
+            name = self.session.neighborhoods.neighborhoods[index].name
+            self.session.merge_neighborhood(index, destination)
+            self.selected = destination
+            self._assignment_changed()
+            self._select(destination)
+            self.statusBar().showMessage(
+                f"Merged {name} into {self.session.neighborhoods.neighborhoods[destination].name}", 5000)
 
     def _split_neighborhood(self, index: int) -> None:
         from .ui.land_table_panel import SplitDialog

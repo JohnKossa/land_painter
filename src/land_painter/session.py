@@ -23,7 +23,7 @@ import numpy as np
 
 from .actions import (
     Action, ApplyTableToChildren, ConvertAdjustment, CreateNeighborhood, DeleteNeighborhood, ImportNeighborhoods,
-    ReassignParcels, RenameNeighborhood, SetLandTable, SetSaleFlags, SplitNeighborhood, decode,
+    MergeNeighborhood, ReassignParcels, RenameNeighborhood, SetLandTable, SetSaleFlags, SplitNeighborhood, decode,
 )
 from .data.config import ImportConfig
 from .data.dataset import Dataset, build_dataset
@@ -388,6 +388,17 @@ class Session:
             raise ValueError("Invalid neighborhood deletion")
         parcels = np.flatnonzero(model.assignment == index).astype(np.uint32)
         self.do(DeleteNeighborhood(index, recipient, parcels, model.children(index)))
+
+    def merge_neighborhood(self, source: int, destination: int) -> None:
+        """Join ``source`` into ``destination``: its parcels and child neighborhoods move
+        there and it is deleted. The source's land table is discarded."""
+        model = self.neighborhoods
+        if source == ROOT or source == destination or model.neighborhoods[destination].deleted:
+            raise ValueError("Invalid neighborhood merge")
+        if model.subtree_mask(source)[destination]:
+            raise ValueError("Cannot merge a neighborhood into one of its own descendants")
+        parcels = np.flatnonzero(model.assignment == source).astype(np.uint32)
+        self.do(MergeNeighborhood(source, destination, parcels, model.children(source)))
 
     def plan_reassign(self, target: int, parcels: np.ndarray) -> tuple[np.ndarray, list[int]]:
         """(parcels that would move, neighborhoods the move would leave empty)."""

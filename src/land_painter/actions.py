@@ -368,6 +368,44 @@ class DeleteNeighborhood(Action):
 
 @register
 @dataclass
+class MergeNeighborhood(Action):
+    """Join a neighborhood into another: move its parcels and child neighborhoods into
+    ``destination`` and delete it, as one undo step. The source's land table is discarded;
+    the merged parcels are valued with the destination's table."""
+
+    kind: ClassVar[str] = "merge_neighborhood"
+    label: ClassVar[str] = "Merge Neighborhood"
+
+    source: int
+    destination: int
+    parcels: np.ndarray  # the source's parcels
+    children: list[int]  # its child neighborhoods
+
+    def apply(self, state: State) -> None:
+        model = state.neighborhoods
+        model.assignment[self.parcels] = self.destination
+        for child in self.children:
+            model.neighborhoods[child].parent = self.destination
+        model.neighborhoods[self.source].deleted = True
+
+    def revert(self, state: State) -> None:
+        model = state.neighborhoods
+        model.neighborhoods[self.source].deleted = False
+        for child in self.children:
+            model.neighborhoods[child].parent = self.source
+        model.assignment[self.parcels] = self.source
+
+    def to_record(self) -> tuple[dict, bytes | None]:
+        return ({"source": self.source, "destination": self.destination, "children": self.children},
+                pack_indices(self.parcels))
+
+    @classmethod
+    def from_record(cls, params: dict, data: bytes | None) -> MergeNeighborhood:
+        return cls(params["source"], params["destination"], unpack_indices(data), params["children"])
+
+
+@register
+@dataclass
 class ReassignParcels(Action):
     """Move parcels from any neighborhoods into ``target``; delete neighborhoods this empties."""
 

@@ -72,6 +72,52 @@ def test_delete_moves_parcels_and_children(session):
         session.delete_neighborhood(ROOT, a)
 
 
+def test_merge_moves_parcels_and_children_under_destination(session):
+    session.set_land_table(ROOT, LandTable(LOT, FlatRate(1.0)))
+    a = session.create_neighborhood(ROOT, np.array([0, 1, 2, 3]))
+    session.set_land_table(a, LandTable(LOT, FlatRate(5.0)))
+    child = session.create_neighborhood(a, np.array([0]))
+    b = session.create_neighborhood(ROOT, np.array([4, 5]))
+    session.set_land_table(b, LandTable(LOT, FlatRate(9.0)))
+
+    session.merge_neighborhood(a, b)
+    model = session.neighborhoods
+    assert model.neighborhoods[a].deleted
+    assert model.assignment.tolist()[:6] == [child, b, b, b, b, b]
+    assert model.neighborhoods[child].parent == b  # reparented under the destination, not up to root
+    assert session.land_values.tolist()[1:4] == [9.0, 9.0, 9.0]  # destination's table applies
+    assert a not in model.live() and a not in model.children(ROOT)
+    assert session.undo_label() == "Merge Neighborhood"
+
+    session.undo()  # one undo restores the parcels, the neighborhood and the child's parent
+    assert not model.neighborhoods[a].deleted and model.neighborhoods[child].parent == a
+    assert model.assignment.tolist()[:4] == [child, a, a, a]
+    assert session.land_values.tolist()[1:4] == [5.0, 5.0, 5.0]
+
+
+def test_merge_rejects_root_self_and_descendant(session):
+    a = session.create_neighborhood(ROOT, np.array([0, 1, 2]))
+    child = session.create_neighborhood(a, np.array([0]))
+    with pytest.raises(ValueError):
+        session.merge_neighborhood(ROOT, a)
+    with pytest.raises(ValueError):
+        session.merge_neighborhood(a, a)
+    with pytest.raises(ValueError):
+        session.merge_neighborhood(a, child)  # can't merge into its own descendant
+
+
+def test_merge_survives_reopen(session, tmp_path):
+    a = session.create_neighborhood(ROOT, np.array([0, 1]))
+    b = session.create_neighborhood(ROOT, np.array([2, 3]))
+    session.rename_neighborhood(b, "East")
+    session.merge_neighborhood(a, b)
+    session.save_as(tmp_path / "s.lpsession")
+    reopened = Session.open(tmp_path / "s.lpsession")
+    assert reopened.neighborhoods.assignment.tolist() == session.neighborhoods.assignment.tolist()
+    assert [n.deleted for n in reopened.neighborhoods.neighborhoods] == [False, True, False]
+    assert reopened.neighborhoods.neighborhoods[b].name == "East"
+
+
 def test_reassign_takes_from_any_neighborhood(session):
     a = session.create_neighborhood(ROOT, np.array([0, 1]))
     b = session.create_neighborhood(ROOT, np.array([4, 5, 6]))
