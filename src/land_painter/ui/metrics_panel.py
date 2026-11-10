@@ -70,19 +70,25 @@ SIGNIFICANCE = 0.05  # p-value below which spatial clustering is highlighted
 
 
 def autocorrelation_html(a: Autocorrelation) -> str:
+    """e.g. 'r 0.42, p-value 0.003 — unlikely to be chance' (r coloured by significance)."""
     if a.rho is None:
         return span(UNDEFINED, MUTED)
-    color = BAD if a.p_value < SIGNIFICANCE else GOOD
-    return (f"{span(f'ρ {a.rho:.2f}', color)} (p {a.p_value:.3f}, null {a.null_mean:.2f}, "
-            f"n={a.n:,})")
+    significant = a.p_value < SIGNIFICANCE
+    gloss = "unlikely to be chance" if significant else "could be chance"
+    return f"{span(f'r {a.rho:.2f}', BAD if significant else GOOD)}, p-value {a.p_value:.3f} — {gloss}"
 
 
 def spatial_html(test: SpatialTest | None) -> str:
     if test is None or test.n_sales < 3:
         return UNDEFINED + " (needs 3+ vacant sales with a land value)"
-    return (f"{autocorrelation_html(test.all_pairs)}<br>excluding neighbors sold within {WINDOW_DAYS} days: "
-            f"{autocorrelation_html(test.time_controlled)}<br>"
-            f"{test.n_sales:,} vacant sales, {test.k} nearest neighbors each")
+    main = test.all_pairs
+    lines = [autocorrelation_html(main)]
+    if main.rho is not None and main.p_value < SIGNIFICANCE:
+        lines.append(span("→ likely a missing location factor, or a neighborhood that should be split.", BAD))
+    lines.append(f"After excluding sales within {WINDOW_DAYS} days of a neighbor: "
+                 f"{autocorrelation_html(test.time_controlled)}")
+    lines.append(f"{test.n_sales:,} vacant sales · {test.k} nearest neighbors each")
+    return "<br>".join(lines)
 
 
 def ratio_html(study: RatioStudy) -> str:
@@ -142,22 +148,22 @@ class MetricsPanel(QWidget):
         self.over_price = QLabel()
         self.spatial = QLabel()
         spatial_tip = (
-            "Residual spatial autocorrelation: do over- and under-assessed vacant sales cluster in space inside "
-            "this neighborhood?\n\n"
-            f"What to look for: a high ρ with a low p (< {SIGNIFICANCE}, highlighted) means one part of the "
-            "neighborhood is consistently over-assessed and another under-assessed. That usually points to:\n"
-            "  • a neighborhood that is too large (two sub-markets) — consider splitting it, or\n"
-            "  • a missing adjustment (water, a busy road, a view, a flood zone) — consider a multiplier.\n"
-            "Rough guide when p is low: ρ under ~0.1 is negligible, 0.1–0.3 is worth a look on the map, over ~0.3 "
-            "is strong. A high p means any clustering could be chance.\n"
-            f"If ρ drops sharply once neighbors sold within {WINDOW_DAYS} days are excluded, suspect market timing "
-            "(the time adjustment) rather than location.\n\n"
-            "How it works: residual = ln(land value / price) − the neighborhood's median. ρ is the correlation of "
-            f"each sale's residual with the mean residual of its {K} nearest sales (never on the same parcel). "
-            f"p is one-sided, from {PERMUTATIONS} shuffles of the residuals; 'null' is the mean shuffled ρ.\n"
-            "With fewer than ~30 sales the test has little power.")
+            "Do over- and under-assessed vacant sales cluster together in one part of this neighborhood?\n\n"
+            "When they do, one area is consistently over-assessed and another under-assessed — a sign that:\n"
+            "  • the neighborhood is too large and really holds two sub-markets — consider splitting it, or\n"
+            "  • an adjustment is missing (water, a busy road, a view, a flood zone) — consider adding one.\n\n"
+            "r is the main number — how strongly similar ratios sit near each other: under ~0.1 negligible, "
+            "0.1–0.3 worth a look on the map, over ~0.3 strong. The p-value just confirms the pattern isn't "
+            f"chance (highlighted below {SIGNIFICANCE}); when the p-value is high, any clustering could be random, "
+            "so ignore r.\n"
+            f"If r drops sharply once sales within {WINDOW_DAYS} days of a neighbor are excluded, suspect sale "
+            "timing (your time adjustment) rather than location.\n\n"
+            "How it works: each sale's residual is ln(land value ÷ price) minus the neighborhood median; r is how "
+            f"closely each residual tracks the average of its {K} nearest sales (never the same parcel). The "
+            f"p-value is one-sided, from {PERMUTATIONS} reshuffles of the residuals. With fewer than ~30 sales the "
+            "test has little power.")
         self.spatial.setToolTip(spatial_tip)
-        spatial_label = QLabel("Spatial clustering of ratios ⓘ:")
+        spatial_label = QLabel("Clustering of sale ratios ⓘ:")
         spatial_label.setToolTip(spatial_tip)
         tests = QGroupBox("Tests")
         form = QFormLayout(tests)
