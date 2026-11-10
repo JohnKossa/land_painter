@@ -1,10 +1,27 @@
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.compare import (
-    BOTH, OTHER, PARCELS, SALES, Group, attributes, categories, cliffs_delta, compare, cramers_v, histogram,
-    ks_distance, magnitude, neighborhood_selection, rest_of_parent_selection, selection_for, subtree_selection,
-    CLIFF_LEVELS, MAX_CATEGORIES,
+    BOTH,
+    CLIFF_LEVELS,
+    MAX_CATEGORIES,
+    OTHER,
+    PARCELS,
+    SALES,
+    Group,
+    attributes,
+    categories,
+    cliffs_delta,
+    compare,
+    cramers_v,
+    histogram,
+    ks_distance,
+    magnitude,
+    neighborhood_selection,
+    rest_of_parent_selection,
+    selection_for,
+    subtree_selection,
 )
 from land_painter.data.config import CATEGORICAL, ROLE_SALES, ColumnRef, FileSpec, SalesMapping, parcel_only_config
 from land_painter.data.dataset import build_dataset
@@ -12,8 +29,6 @@ from land_painter.data.sources import inspect
 from land_painter.land_table import FlatRate, LandTable
 from land_painter.neighborhoods import ROOT
 from land_painter.session import Session
-
-from test_core import synthetic
 
 
 def brute_delta(a, b):
@@ -159,7 +174,8 @@ def test_sale_level_attributes(session):
     assert c.groups == []  # sale-level attributes have no parcel population
     c = compare(s, attr(s, "sale_ratio"), hoods(s, ROOT, child), SALES)
     assert [x.n for x in c.summaries] == [5, 1]  # vacant sales only
-    assert c.summaries[0].median == pytest.approx(np.median([10 * (1000 + i) / (10_000 + 100 * i) for i in (1, 3, 5, 7, 9)]))
+    assert c.summaries[0].median == pytest.approx(
+        np.median([10 * (1000 + i) / (10_000 + 100 * i) for i in (1, 3, 5, 7, 9)]))
 
 
 def test_categorical_comparison(session):
@@ -181,8 +197,8 @@ def test_subtree_and_rest_of_parent(session):
     s, child = session
     model = s.neighborhoods
     # A grandchild inside the child, and a sibling of the child
-    grandchild = s.create_neighborhood(child, np.arange(20, 25))
-    sibling = s.create_neighborhood(ROOT, np.arange(0, 5))
+    s.create_neighborhood(child, np.arange(20, 25))
+    s.create_neighborhood(ROOT, np.arange(0, 5))
     sub = subtree_selection(model, child)
     assert sub.parcels.sum() == 20  # the child's 15 direct parcels + the grandchild's 5
     rest = rest_of_parent_selection(model, child)

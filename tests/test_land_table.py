@@ -1,16 +1,23 @@
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import CATEGORICAL, CONTINUOUS, FLAG, ColumnRef, parcel_only_config
 from land_painter.data.dataset import build_dataset
 from land_painter.data.sources import inspect
 from land_painter.land_table import (
-    ADD, IN, LOT, MULTIPLY, Adjustment, Condition, FlatRate, LandTable, evaluate,
+    ADD,
+    IN,
+    LOT,
+    MULTIPLY,
+    Adjustment,
+    Condition,
+    FlatRate,
+    LandTable,
+    evaluate,
 )
 from land_painter.neighborhoods import ROOT
 from land_painter.session import Session
-
-from test_core import synthetic
 
 
 def test_condition_masks():

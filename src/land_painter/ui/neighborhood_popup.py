@@ -5,14 +5,21 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPushButton, QSplitter, QVBoxLayout, QWidget,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..neighborhoods import ROOT
 from ..session import Session
 from .land_table_panel import LandTablePanel
 from .metrics_panel import MetricsPanel
-
 
 MERGE_TOOLTIP = ("Join this neighborhood into another: its parcels and sub-neighborhoods move there "
                  "and it is removed")

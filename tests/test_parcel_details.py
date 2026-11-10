@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import CATEGORICAL, CONTINUOUS, ColumnRef, parcel_only_config
 from land_painter.data.dataset import build_dataset
@@ -7,8 +8,6 @@ from land_painter.data.sources import inspect
 from land_painter.neighborhoods import ROOT
 from land_painter.parcel_details import parcel_details
 from land_painter.session import Session
-
-from test_core import synthetic
 
 
 @pytest.fixture

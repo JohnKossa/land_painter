@@ -1,6 +1,7 @@
 import numpy as np
 import polars as pl
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import CATEGORICAL, ColumnRef, parcel_only_config
 from land_painter.data.dataset import build_dataset
@@ -9,8 +10,6 @@ from land_painter.export import export, land_table_tables, neighborhood_paths, o
 from land_painter.land_table import ADD, IN, LOT, MULTIPLY, Adjustment, Condition, FlatRate, LandTable
 from land_painter.neighborhoods import ROOT
 from land_painter.session import Session
-
-from test_core import synthetic
 
 
 @pytest.fixture
@@ -42,7 +41,8 @@ def session(tmp_path):
 
 
 def test_paths(session):
-    assert neighborhood_paths(session.neighborhoods)[:3] == ["Everything", "Everything / North", "Everything / North / Lake"]
+    assert neighborhood_paths(session.neighborhoods)[:3] == [
+        "Everything", "Everything / North", "Everything / North / Lake"]
 
 
 def test_parcel_table(session):

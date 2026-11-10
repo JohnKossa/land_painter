@@ -21,6 +21,24 @@ from ..map import MapView
 from ..session import Session
 
 
+def versioned(build: Callable[[], bytes], version: Callable[[], int]) -> Callable[[], bytes]:
+    """Wrap a byte producer so it only rebuilds when ``version()`` changes.
+
+    The map cache-busts every re-fetch, so a buffer is normally rebuilt once per
+    version bump. This helps when a shared signal re-fetches a buffer whose own
+    inputs did not change — e.g. a sale-flag change bumps the colors but not the
+    visible set, so the sale points should not be rebuilt.
+    """
+    cache: dict = {"version": object(), "bytes": b""}  # sentinel version != any real one
+    def produce() -> bytes:
+        v = version()
+        if v != cache["version"]:
+            cache["bytes"] = build()
+            cache["version"] = v
+        return cache["bytes"]
+    return produce
+
+
 class MapController:
     def __init__(self, map_view: MapView, session: Session, basemap_urls: Callable[[], list[str]]):
         self.map = map_view

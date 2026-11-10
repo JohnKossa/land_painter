@@ -252,7 +252,8 @@ class SetLandTable(Action):
 
     @classmethod
     def from_record(cls, params: dict, data: bytes | None) -> SetLandTable:
-        return cls(params["neighborhood"], LandTable.from_dict(params["table"]), LandTable.from_dict(params["previous"]))
+        return cls(params["neighborhood"], LandTable.from_dict(params["table"]),
+                   LandTable.from_dict(params["previous"]))
 
 
 @register

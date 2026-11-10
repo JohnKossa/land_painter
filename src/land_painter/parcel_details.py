@@ -16,7 +16,14 @@ import numpy as np
 import polars as pl
 
 from .data.config import (
-    CATEGORICAL, CONTINUOUS, DEPRECIATED_COST, FLAG, NEIGHBORHOOD, REPLACEMENT_COST, ROLL_BUILDING, ROLL_LAND,
+    CATEGORICAL,
+    CONTINUOUS,
+    DEPRECIATED_COST,
+    FLAG,
+    NEIGHBORHOOD,
+    REPLACEMENT_COST,
+    ROLL_BUILDING,
+    ROLL_LAND,
 )
 from .format import money, number
 

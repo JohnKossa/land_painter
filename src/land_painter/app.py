@@ -7,12 +7,20 @@ import os
 import time
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QCursor, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMessageBox, QVBoxLayout, QWidget,
+    QApplication,
+    QDockWidget,
+    QFileDialog,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
 )
-import numpy as np
 
 from .data.dataset import build_dataset
 from .data.review import DataError
@@ -20,12 +28,12 @@ from .data.sources import FILE_FILTER
 from .map import MapView
 from .neighborhoods import ROOT
 from .sales import DISQUALIFIED, KNOWN_GOOD, UNFLAGGED
-from .session import SESSION_SUFFIX, Session, SessionError, read_config, relocate_inputs
-from .ui.map_controller import MapController
+from .session import Session, SessionError, read_config, relocate_inputs
+from .ui.map_controller import MapController, versioned
+from .ui.session_files import SessionFilesMixin
 from .ui.tasks import run_with_progress
 
 SALE_COLORS = {UNFLAGGED: (240, 240, 240, 255), KNOWN_GOOD: (152, 195, 121, 255), DISQUALIFIED: (224, 108, 117, 255)}
-SESSION_FILTER = f"Land Painter session (*{SESSION_SUFFIX})"
 
 # TEMPORARY online basemap (see SPEC.md lines 11, 33 — the shipping app uses a
 # local, offline basemap). Carto "Positron" raster tiles, keyed by the API key
@@ -87,7 +95,7 @@ def open_session(path: str, parent=None) -> Session | None:
         return None
 
 
-class MainWindow(QMainWindow):
+class MainWindow(SessionFilesMixin, QMainWindow):
     timing = Signal(str, float)  # every timing, Python- or JS-side, in ms
 
     def __init__(self, session: Session):
@@ -98,6 +106,7 @@ class MainWindow(QMainWindow):
         self.layer = session.layer
         self.selected = ROOT
         self._detail_target: tuple[int, int] | None = None  # (parcel, sale) shown in the details panel; sale -1 if none
+        self._sale_view_version = 0  # bumped when the shown set of sales changes (not on flag-only changes)
 
         self.banner = QLabel()
         self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -106,7 +115,10 @@ class MainWindow(QMainWindow):
                                "PRD 0.98–1.03, PRB −0.05–0.05")
         self.map = MapView()
         self.map_controller = MapController(self.map, session, _basemap_urls)
-        self.map_controller.provide_sales(self._sale_points, self._sale_colors)
+        # Sale points depend only on the shown set, so a flag-only change (which bumps
+        # colors) does not rebuild them; colors are cheap and always rebuilt.
+        self.map_controller.provide_sales(
+            versioned(self._sale_points, lambda: self._sale_view_version), self._sale_colors)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -189,8 +201,8 @@ class MainWindow(QMainWindow):
         pane.saleSelected.connect(self._follow_sale_details)
         pane.saleActivated.connect(self._zoom_to_sale)
         pane.detailsRequested.connect(self._show_sale_details)
-        pane.visibleChanged.connect(self._sales_changed)
-        pane.show_on_map.toggled.connect(self._sales_changed)
+        pane.visibleChanged.connect(self._sales_view_changed)
+        pane.show_on_map.toggled.connect(self._sales_view_changed)
 
         dock = QDockWidget("Sales", self)
         dock.setObjectName("sales")
@@ -505,101 +517,6 @@ class MainWindow(QMainWindow):
         parts.append(f"{len(self.session.neighborhoods.neighborhoods):,} neighborhoods")
         self.statusBar().showMessage(" · ".join(parts), 15000)
 
-    def _new_session(self) -> None:
-        if self._can_discard():
-            self._replace_with(new_session(self))
-
-    def _open_session(self) -> None:
-        if not self._can_discard():
-            return
-        path = QFileDialog.getOpenFileName(self, "Open session", "", SESSION_FILTER)[0]
-        if path:
-            self._replace_with(open_session(path, self))
-
-    def _can_discard(self) -> bool:
-        if self.session.path is not None or self.session.journal.length == 0:
-            return True
-        answer = QMessageBox.question(
-            self, "Unsaved session", "This session has never been saved. Discard it?",
-            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
-        )
-        return answer == QMessageBox.StandardButton.Discard
-
-    def _replace_with(self, session: Session | None) -> None:
-        if session is None:
-            return
-        show_window(session)
-        self._discard_on_close = True
-        self.close()
-
-    def _save(self) -> None:
-        if self.session.path is None:
-            self._save_as()
-        else:
-            self.statusBar().showMessage("Changes are saved automatically once a session has a file", 5000)
-
-    def _save_as(self) -> bool:
-        path = QFileDialog.getSaveFileName(self, "Save session", "", SESSION_FILTER)[0]
-        if not path:
-            return False
-        if not path.lower().endswith(SESSION_SUFFIX):
-            path += SESSION_SUFFIX
-        self.session.save_as(path)
-        self._refresh_chrome()
-        self.statusBar().showMessage(f"Saved to {path}", 5000)
-        return True
-
-    def _export(self) -> None:
-        from .export import export, output_paths
-
-        if self.land_panel.dirty:
-            answer = QMessageBox.question(
-                self, "Unapplied land table changes",
-                "The open land table has changes that have not been applied. The export uses applied land tables "
-                "only. Export anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        default = (self.session.path.with_suffix("") if self.session.path else Path("land_painter_export"))
-        path, chosen = QFileDialog.getSaveFileName(
-            self, "Export parcels and land tables", f"{default}_export.parquet",
-            "Parquet (*.parquet);;CSV (*.csv)")
-        if not path:
-            return
-        suffix = ".csv" if chosen.startswith("CSV") else ".parquet"
-        if Path(path).suffix.lower() not in (".csv", ".parquet"):
-            path += suffix
-        companions = [p for p in output_paths(path)[1:] if p.exists()]
-        if companions:
-            names = "".join(f"<li>{p.name}</li>" for p in companions)
-            answer = QMessageBox.question(self, "Replace files?", f"These files will also be replaced:<ul>{names}</ul>",
-                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        try:
-            written = run_with_progress(self, "Exporting…", lambda: export(self.session, path))
-        except OSError as exc:
-            QMessageBox.critical(self, "Export failed", str(exc))
-            return
-        files = "".join(f"<li>{p.name}</li>" for p in written)
-        QMessageBox.information(self, "Export complete", f"Wrote to {written[0].parent}:<ul>{files}</ul>")
-
-    def closeEvent(self, event) -> None:
-        if (self.session.path is None and self.session.journal.length > 0
-                and not getattr(self, "_discard_on_close", False)):
-            answer = QMessageBox.question(
-                self, "Unsaved session", "Save this session before closing?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-            )
-            if answer == QMessageBox.StandardButton.Cancel or (
-                    answer == QMessageBox.StandardButton.Save and not self._save_as()):
-                event.ignore()
-                return
-        if self in _windows:
-            _windows.remove(self)
-        event.accept()
-
     def _assignment_changed(self) -> None:
         self.map_controller.refresh_assignment()
         if self.sales_pane is not None:
@@ -636,6 +553,12 @@ class MainWindow(QMainWindow):
 
     def _sales_changed(self) -> None:
         self.map_controller.refresh_sales()
+
+    def _sales_view_changed(self, *_args) -> None:
+        """The shown set of sales changed (filter, neighborhood scope, show-on-map),
+        so the sale points — not just their colors — must be rebuilt."""
+        self._sale_view_version += 1
+        self._sales_changed()
 
     def _flag_sales(self, sales: np.ndarray, flag: int) -> None:
         if self.session.set_sale_flags(sales, flag):

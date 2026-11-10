@@ -4,19 +4,16 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import TypeVar
 
 from PySide6.QtCore import QEventLoop, QObject, Qt, Signal
 from PySide6.QtWidgets import QProgressDialog, QWidget
-
-T = TypeVar("T")
 
 
 class _Relay(QObject):
     finished = Signal(object, object)  # result, exception
 
 
-def run_with_progress(parent: QWidget | None, label: str, work: Callable[[], T]) -> T:
+def run_with_progress[T](parent: QWidget | None, label: str, work: Callable[[], T]) -> T:
     """Run ``work`` on a worker thread behind a modal busy dialog; return its result.
 
     Exceptions raised by ``work`` are re-raised here, on the UI thread.

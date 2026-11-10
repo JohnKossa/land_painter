@@ -15,8 +15,17 @@ import polars as pl
 from PySide6.QtCore import QAbstractTableModel, QItemSelectionModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QFont, QKeySequence
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel, QMenu, QPushButton,
-    QTableView, QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMenu,
+    QPushButton,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..format import money, number, ratio

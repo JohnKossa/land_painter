@@ -14,9 +14,23 @@ import numpy as np
 import polars as pl
 
 from .config import (
-    DEPRECIATED_COST, FILL_MEDIAN, FILL_VALUE, FILL_ZERO, NEIGHBORHOOD, REPLACEMENT_COST, ROLL_BUILDING, ROLL_LAND,
-    CATEGORICAL, CONTINUOUS, FLAG, UNUSED, WHEN,
-    Cleaning, ColumnRef, ImportConfig, unit_field,
+    CATEGORICAL,
+    CONTINUOUS,
+    DEPRECIATED_COST,
+    FILL_MEDIAN,
+    FILL_VALUE,
+    FILL_ZERO,
+    FLAG,
+    NEIGHBORHOOD,
+    REPLACEMENT_COST,
+    ROLL_BUILDING,
+    ROLL_LAND,
+    UNUSED,
+    WHEN,
+    Cleaning,
+    ColumnRef,
+    ImportConfig,
+    unit_field,
 )
 from .sources import BOOLEAN, DATE, NUMERIC, TEXT, SourceInfo, read_columns, scan
 
@@ -240,11 +254,8 @@ def _plural(n: int, one: str, many: str | None = None) -> str:
     return f"{n:,} {one if n == 1 else (many or one + 's')}"
 
 
-def prepare(config: ImportConfig) -> Prepared:
-    issues: list[Issue] = []
-    unparseable: dict[str, int] = {}
-
-    # Parcel keys
+def _prepare_keys(config: ImportConfig, issues: list[Issue]) -> tuple[pl.Series, pl.Series]:
+    """Parcel keys (nulls dropped) and their imploded set; flags missing and duplicate keys."""
     keys = as_text(read_columns(config.parcel_file, [config.parcel_key]).to_series())
     if n := int(keys.is_null().sum()):
         issues.append(Issue(WARNING, f"{_plural(n, 'parcel')} in the parcel file have no key and will be skipped."))
@@ -252,37 +263,56 @@ def prepare(config: ImportConfig) -> Prepared:
     if n := int(keys.is_duplicated().sum()):
         issues.append(Issue(ERROR, f"{_plural(n, 'parcel row')} share a key with another row. "
                                    "Parcel keys must be unique; choose a different key column or fix the file."))
-    base = pl.DataFrame({"key": keys})
-    key_set = keys.implode()
+    return keys, keys.implode()
 
-    # Parcel-level fields, file by file
-    fields = parcel_fields(config)
+
+def _reconcile_secondary(frame: pl.DataFrame, path: str, keys: pl.Series, key_set: pl.Series,
+                         issues: list[Issue]) -> pl.DataFrame:
+    """Drop null keys and flag suspect joins (repeated keys, keys/parcels with no match) on a non-parcel file."""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    frame = frame.drop_nulls("key")
+    if n := frame.height - frame["key"].n_unique():
+        issues.append(Issue(WARNING,
+            f"{name}: {_plural(n, 'row')} repeat a key; the first row for each key is used."))
+        frame = frame.unique("key", keep="first", maintain_order=True)
+    if n := int((~frame["key"].is_in(key_set)).sum()):
+        issues.append(Issue(WARNING,
+            f"{name}: {_plural(n, 'key')} not found in the parcel file; those rows are ignored."))
+    if n := int((~keys.is_in(frame["key"].implode())).sum()):
+        issues.append(Issue(WARNING,
+            f"{name}: {_plural(n, 'parcel')} have no row in this file; their values are missing."))
+    return frame
+
+
+def _join_parcel_files(config: ImportConfig, keys: pl.Series, key_set: pl.Series,
+                       issues: list[Issue]) -> pl.DataFrame:
+    """Join every mapped parcel-level column (plus the neighborhood column) onto the parcel keys.
+
+    Columns are renamed to ``path::column`` so same-named columns from different files don't collide.
+    """
     by_file: dict[str, set[str]] = {}
-    for refs in fields.values():
+    for refs in parcel_fields(config).values():
         for ref in refs:
             by_file.setdefault(ref.file, set()).add(ref.column)
     if config.neighborhood:
         by_file.setdefault(config.neighborhood.file, set()).add(config.neighborhood.column)
 
+    base = pl.DataFrame({"key": keys})
     for path, columns in by_file.items():
         key_column = config.key_for(path)
         frame = read_columns(path, [key_column, *sorted(columns)])
         frame = frame.rename({c: f"{path}::{c}" for c in columns}).with_columns(
             key=as_text(frame[key_column])).select("key", *[f"{path}::{c}" for c in columns])
         if path != config.parcel_file:
-            name = path.replace("\\", "/").rsplit("/", 1)[-1]
-            frame = frame.drop_nulls("key")
-            if n := frame.height - frame["key"].n_unique():
-                issues.append(Issue(WARNING, f"{name}: {_plural(n, 'row')} repeat a key; the first row for each key is used."))
-                frame = frame.unique("key", keep="first", maintain_order=True)
-            if n := int((~frame["key"].is_in(key_set)).sum()):
-                issues.append(Issue(WARNING, f"{name}: {_plural(n, 'key')} not found in the parcel file; those rows are ignored."))
-            if n := int((~keys.is_in(frame["key"].implode())).sum()):
-                issues.append(Issue(WARNING, f"{name}: {_plural(n, 'parcel')} have no row in this file; their values are missing."))
+            frame = _reconcile_secondary(frame, path, keys, key_set, issues)
         base = base.join(frame, on="key", how="left", maintain_order="left")
+    return base
 
+
+def _assemble_fields(config: ImportConfig, base: pl.DataFrame, unparseable: dict[str, int]) -> pl.DataFrame:
+    """Build the parcels frame: one numeric column per field id (summed when several), plus neighborhood."""
     columns = {"key": base["key"]}
-    for field_id, refs in fields.items():
+    for field_id, refs in parcel_fields(config).items():
         parts = []
         lost = 0
         for ref in refs:
@@ -300,38 +330,50 @@ def prepare(config: ImportConfig) -> Prepared:
     if config.neighborhood:
         ref = config.neighborhood
         columns[NEIGHBORHOOD] = as_text(base[f"{ref.file}::{ref.column}"]).alias(NEIGHBORHOOD)
-    parcels = pl.DataFrame(columns)
+    return pl.DataFrame(columns)
 
-    # Sales
-    sales = None
-    date_format = None
-    if config.sales_file and config.sales:
-        m = config.sales
-        raw = read_columns(config.sales_file, [m.key, m.price, m.date, m.vacant])
-        price, unparseable["sale_price"] = to_number(raw[m.price])
-        dates = parse_dates(raw[m.date], m.date_format)
-        date, unparseable["sale_date"] = dates.values, dates.unparseable
-        date_format = dates.format
-        if dates.alternatives:
-            options = " or ".join(DATE_FORMATS[f] for f in [dates.format, *dates.alternatives])
-            issues.append(Issue(WARNING, f"Sale dates are ambiguous (could be {options}). "
-                                         "Check the date format on the Mapped fields tab."))
-        sales = pl.DataFrame({
-            "key": as_text(raw[m.key]),
-            "price": price,
-            "date": date,
-            "vacant": vacant_flags(raw[m.vacant], m.vacant_values),
-        })
-        if n := int(sales["key"].is_null().sum()):
-            issues.append(Issue(WARNING, f"{_plural(n, 'sale')} have no parcel key; they are excluded."))
-        if n := int((~sales["key"].is_in(key_set) & sales["key"].is_not_null()).sum()):
-            issues.append(Issue(WARNING, f"{_plural(n, 'sale')} have keys not found in the parcel file; they are excluded."))
-        if n := int(sales["vacant"].is_null().sum()):
-            issues.append(Issue(WARNING, f"{_plural(n, 'sale')} have no vacant/improved value; they are excluded from metrics."))
-        n_vacant = int(sales["vacant"].sum())
-        issues.append(Issue(INFO, f"{_plural(n_vacant, 'vacant sale')} and "
-                                  f"{_plural(int((~sales['vacant']).sum()), 'improved sale')}."))
 
+def _prepare_sales(config: ImportConfig, key_set: pl.Series, unparseable: dict[str, int],
+                   issues: list[Issue]) -> tuple[pl.DataFrame | None, str | None]:
+    """The sales frame (key, price, date, vacant) and the date format used; None when no sales are mapped."""
+    if not (config.sales_file and config.sales):
+        return None, None
+    m = config.sales
+    raw = read_columns(config.sales_file, [m.key, m.price, m.date, m.vacant])
+    price, unparseable["sale_price"] = to_number(raw[m.price])
+    dates = parse_dates(raw[m.date], m.date_format)
+    unparseable["sale_date"] = dates.unparseable
+    if dates.alternatives:
+        options = " or ".join(DATE_FORMATS[f] for f in [dates.format, *dates.alternatives])
+        issues.append(Issue(WARNING, f"Sale dates are ambiguous (could be {options}). "
+                                     "Check the date format on the Mapped fields tab."))
+    sales = pl.DataFrame({
+        "key": as_text(raw[m.key]),
+        "price": price,
+        "date": dates.values,
+        "vacant": vacant_flags(raw[m.vacant], m.vacant_values),
+    })
+    if n := int(sales["key"].is_null().sum()):
+        issues.append(Issue(WARNING, f"{_plural(n, 'sale')} have no parcel key; they are excluded."))
+    if n := int((~sales["key"].is_in(key_set) & sales["key"].is_not_null()).sum()):
+        issues.append(Issue(WARNING,
+            f"{_plural(n, 'sale')} have keys not found in the parcel file; they are excluded."))
+    if n := int(sales["vacant"].is_null().sum()):
+        issues.append(Issue(WARNING,
+            f"{_plural(n, 'sale')} have no vacant/improved value; they are excluded from metrics."))
+    n_vacant = int(sales["vacant"].sum())
+    issues.append(Issue(INFO, f"{_plural(n_vacant, 'vacant sale')} and "
+                              f"{_plural(int((~sales['vacant']).sum()), 'improved sale')}."))
+    return sales, dates.format
+
+
+def prepare(config: ImportConfig) -> Prepared:
+    issues: list[Issue] = []
+    unparseable: dict[str, int] = {}
+    keys, key_set = _prepare_keys(config, issues)
+    base = _join_parcel_files(config, keys, key_set, issues)
+    parcels = _assemble_fields(config, base, unparseable)
+    sales, date_format = _prepare_sales(config, key_set, unparseable, issues)
     return Prepared(keys, parcels, sales, unparseable, issues, date_format)
 
 
@@ -392,10 +434,12 @@ def profile_characteristics(config: ImportConfig, infos: dict[str, SourceInfo]) 
             sample = lazy.select(text_columns).head(20_000).collect()
             for c in text_columns:
                 text = as_text(sample[c]).drop_nulls()
-                rates[c] = float(text.str.replace_all(r"[,$]", "").cast(pl.Float64, strict=False).is_not_null().mean()) if len(text) else 0.0
+                parsed = text.str.replace_all(r"[,$]", "").cast(pl.Float64, strict=False)
+                rates[c] = float(parsed.is_not_null().mean()) if len(text) else 0.0
         for c in columns:
             missing = stats[f"n::{c}"]
             distinct = stats[f"u::{c}"] - (1 if missing else 0)
             kind, review = _suggest_kind(info.columns[c], distinct, missing, info.n_rows, rates.get(c, 0.0))
-            profiles.append(ColumnProfile(ColumnRef(path, c), info.columns[c], distinct, missing, info.n_rows, kind, review))
+            profiles.append(ColumnProfile(ColumnRef(path, c), info.columns[c], distinct, missing,
+                                          info.n_rows, kind, review))
     return profiles

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import ROLE_SALES, ColumnRef, FileSpec, SalesMapping, parcel_only_config
 from land_painter.data.dataset import build_dataset
@@ -8,8 +9,6 @@ from land_painter.land_table import FlatRate, LandTable
 from land_painter.metrics import MOVE_THRESHOLD, compute
 from land_painter.neighborhoods import ROOT
 from land_painter.session import Session
-
-from test_core import synthetic
 
 
 def make_session(tmp_path, with_roll=True):

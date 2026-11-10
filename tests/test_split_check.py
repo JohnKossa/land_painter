@@ -1,12 +1,11 @@
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import ColumnRef, parcel_only_config
 from land_painter.data.dataset import build_dataset
 from land_painter.data.sources import inspect
 from land_painter.split import MIN_GROUP, decompose, split_check
-
-from test_core import synthetic
 
 N = 200
 K = 10  # neighborhoods of 20

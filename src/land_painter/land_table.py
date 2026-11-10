@@ -37,7 +37,8 @@ class Condition:
     def mask(self, data: np.ndarray) -> np.ndarray:
         """Which entries of ``data`` match. Missing values never match."""
         if self.op == IN:
-            present = np.array([v is not None for v in data], dtype=bool) if data.dtype == object else np.ones(len(data), bool)
+            present = (np.array([v is not None for v in data], dtype=bool)
+                       if data.dtype == object else np.ones(len(data), bool))
             return present & np.isin(data.astype(str), list(self.values))
         x, v = data.astype(float), float(self.value)
         with np.errstate(invalid="ignore"):
@@ -66,7 +67,9 @@ class Adjustment:
     name: str = ""
 
     def describe(self) -> str:
-        return f"× {self.amount:g}" if self.kind == MULTIPLY else f"{'+' if self.amount >= 0 else '−'} ${abs(self.amount):,.2f}"
+        if self.kind == MULTIPLY:
+            return f"× {self.amount:g}"
+        return f"{'+' if self.amount >= 0 else '−'} ${abs(self.amount):,.2f}"
 
     def to_dict(self) -> dict:
         return {"condition": self.condition.to_dict(), "kind": self.kind, "amount": self.amount, "name": self.name}

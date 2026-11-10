@@ -22,8 +22,19 @@ from pathlib import Path
 import numpy as np
 
 from .actions import (
-    Action, ApplyTableToChildren, ConvertAdjustment, CreateNeighborhood, DeleteNeighborhood, ImportNeighborhoods,
-    MergeNeighborhood, ReassignParcels, RenameNeighborhood, SetLandTable, SetSaleFlags, SplitNeighborhood, decode,
+    Action,
+    ApplyTableToChildren,
+    ConvertAdjustment,
+    CreateNeighborhood,
+    DeleteNeighborhood,
+    ImportNeighborhoods,
+    MergeNeighborhood,
+    ReassignParcels,
+    RenameNeighborhood,
+    SetLandTable,
+    SetSaleFlags,
+    SplitNeighborhood,
+    decode,
 )
 from .data.config import ImportConfig
 from .data.dataset import Dataset, build_dataset
@@ -193,7 +204,8 @@ class Session:
         dataset = build_dataset(config)
         journal = Journal.open(path)
         if fingerprint(dataset.layer.keys) != journal.get("parcel_fingerprint"):
-            raise SessionError(f"{Path(config.parcel_file).name} does not match the parcels this session was built from")
+            raise SessionError(
+                f"{Path(config.parcel_file).name} does not match the parcels this session was built from")
         stored = journal.get("sales_fingerprint")
         if stored is None:  # sessions saved before sale flags existed
             journal.set("sales_fingerprint", sales_fingerprint(dataset.sales))
@@ -384,7 +396,7 @@ class Session:
 
     def delete_neighborhood(self, index: int, recipient: int) -> None:
         model = self.neighborhoods
-        if index == ROOT or index == recipient or model.neighborhoods[recipient].deleted:
+        if index in (ROOT, recipient) or model.neighborhoods[recipient].deleted:
             raise ValueError("Invalid neighborhood deletion")
         parcels = np.flatnonzero(model.assignment == index).astype(np.uint32)
         self.do(DeleteNeighborhood(index, recipient, parcels, model.children(index)))
@@ -393,7 +405,7 @@ class Session:
         """Join ``source`` into ``destination``: its parcels and child neighborhoods move
         there and it is deleted. The source's land table is discarded."""
         model = self.neighborhoods
-        if source == ROOT or source == destination or model.neighborhoods[destination].deleted:
+        if source in (ROOT, destination) or model.neighborhoods[destination].deleted:
             raise ValueError("Invalid neighborhood merge")
         if model.subtree_mask(source)[destination]:
             raise ValueError("Cannot merge a neighborhood into one of its own descendants")

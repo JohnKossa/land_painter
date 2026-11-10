@@ -1,18 +1,23 @@
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import ROLE_SALES, ColumnRef, FileSpec, SalesMapping, parcel_only_config
 from land_painter.data.dataset import build_dataset
 from land_painter.data.sources import inspect
 from land_painter.land_table import LOT, FlatRate, LandTable
 from land_painter.metrics import (
-    compute, cod, cov, over_price_sales, per_unit_land_evidence, ratio_study, value_range,
+    cod,
+    compute,
+    cov,
+    over_price_sales,
+    per_unit_land_evidence,
+    ratio_study,
+    value_range,
 )
 from land_painter.neighborhoods import ROOT
 from land_painter.sales import DISQUALIFIED
 from land_painter.session import Session
-
-from test_core import synthetic
 
 
 def test_ratio_study_known_values():
@@ -127,7 +132,8 @@ def test_per_unit_land_evidence(session):
     assert sorted(lot.tolist()) == pytest.approx(sorted([1000.0, 2400.0, 200.0, 500.0, -100.0]))
     # disqualified sales drop out
     session.set_sale_flags([0], DISQUALIFIED)
-    assert sorted(per_unit_land_evidence(session, all_parcels, "Area").tolist()) == pytest.approx([-1.0, 1.25, 2.0, 12.0])
+    assert sorted(per_unit_land_evidence(session, all_parcels, "Area").tolist()) == pytest.approx(
+        [-1.0, 1.25, 2.0, 12.0])
 
 
 def test_scope_is_the_given_parcels(session):

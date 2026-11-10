@@ -16,14 +16,45 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPalette, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QPushButton, QScrollArea, QTableWidget,
-    QTableWidgetItem, QToolTip, QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolTip,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..compare import (
-    BOTH, CLIFF_LEVELS, CRAMER_LEVELS, MAGNITUDES, MONEY, PARCELS, PERCENT, RATIO, SALES, Attribute, Comparison,
-    attributes, bin_parcels, compare, group_parcels, has_descendants, rest_of_parent_selection, selection_for,
+    BOTH,
+    CLIFF_LEVELS,
+    CRAMER_LEVELS,
+    MAGNITUDES,
+    MONEY,
+    PARCELS,
+    PERCENT,
+    RATIO,
+    SALES,
+    Attribute,
+    Comparison,
+    attributes,
+    bin_parcels,
+    compare,
+    group_parcels,
+    has_descendants,
+    rest_of_parent_selection,
+    selection_for,
 )
 from ..session import Session
 from .colors import MUTED

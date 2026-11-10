@@ -5,13 +5,21 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QFormLayout, QGroupBox, QHeaderView, QLabel, QScrollArea, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QFormLayout,
+    QGroupBox,
+    QHeaderView,
+    QLabel,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..format import money, percent, span
 from ..metrics import CHD_MIN_PARCELS, CHD_TARGET, MIN_SALES, Metrics, Range, RatioStudy, RollComparison
-from ..spatial import K, PERMUTATIONS, WINDOW_DAYS, Autocorrelation, SpatialTest
+from ..spatial import PERMUTATIONS, WINDOW_DAYS, Autocorrelation, K, SpatialTest
 from .colors import BAD, GOOD, MUTED
 
 UNDEFINED = "Undefined"

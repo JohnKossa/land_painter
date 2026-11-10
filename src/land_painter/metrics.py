@@ -17,7 +17,6 @@ from .data.config import DEPRECIATED_COST, ROLL_LAND
 from .land_table import LOT
 from .sales import sales_in_scope
 
-
 # --- Statistics -----------------------------------------------------------------------
 
 
@@ -281,6 +280,90 @@ def roll_comparison(roll: np.ndarray, land: np.ndarray, parcels: np.ndarray, vac
                           ratio_study(vacant_land_roll[priced], vacant_price[priced]))
 
 
+def _sales_arrays(session, parcel_mask: np.ndarray):
+    """(sale parcel, price, vacant-sale indices, improved-sale indices) in scope.
+
+    The arrays are None / empty when the session has no sales, so every metric
+    block can treat "no sales" uniformly.
+    """
+    sales = session.dataset.sales
+    if sales is None:
+        empty = np.zeros(0, dtype=np.int64)
+        return None, None, empty, empty
+    scope = sales_in_scope(session.sale_flags, sales, parcel_mask)
+    return scope.parcel, scope.price, scope.vacant_sales, scope.improved_sales
+
+
+def _vacant_ratio_study(land, sale_parcel, price, vacant_sales) -> RatioStudy:
+    """Ratio study over the vacant sales whose parcel has a land value."""
+    if not len(vacant_sales):
+        return ratio_study(np.zeros(0), np.zeros(0))
+    v_land = land[sale_parcel[vacant_sales]]
+    valued = ~np.isnan(v_land)
+    return ratio_study(v_land[valued], price[vacant_sales][valued])
+
+
+def _chd(dataset, unit, parcels, land) -> tuple[float | None, int]:
+    """Horizontal uniformity: (COD of land value per unit across parcels, parcel count)."""
+    units = dataset.unit_values(unit)[parcels]
+    p_land = land[parcels]
+    ok = ~np.isnan(p_land) & (units > 0)
+    return cod(p_land[ok] / units[ok]), int(ok.sum())
+
+
+def _allocations(dataset, unit, parcels, land, cost, sale_parcel, price,
+                 vacant_sales, improved_sales) -> tuple[float | None, float | None, float | None]:
+    """Median land allocation of built parcels, from the land table, vacant sales, and improved sales."""
+    if cost is None:
+        return None, None, None
+    p_land, p_cost = land[parcels], cost[parcels]
+    units = dataset.unit_values(unit)[parcels]
+    built = p_cost > 0
+    allocation_vacant = allocation_sales = None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        table_ok = built & ~np.isnan(p_land)
+        allocation_table = _median(p_land[table_ok] / (p_land[table_ok] + p_cost[table_ok]))
+        vacant_units = dataset.unit_values(unit)[sale_parcel[vacant_sales]] if len(vacant_sales) else np.zeros(0)
+        rate_ok = vacant_units > 0
+        if rate_ok.any():
+            rate = np.mean(price[vacant_sales][rate_ok] / vacant_units[rate_ok])
+            implied = rate * units
+            implied_ok = built & ~np.isnan(implied)
+            allocation_vacant = _median(implied[implied_ok] / (implied[implied_ok] + p_cost[implied_ok]))
+        if len(improved_sales):
+            s_cost = cost[sale_parcel[improved_sales]]
+            s_ok = s_cost > 0
+            allocation_sales = _median(1 - s_cost[s_ok] / price[improved_sales][s_ok])
+    return allocation_table, allocation_vacant, allocation_sales
+
+
+def _over_price(land, sale_parcel, price, vacant_sales, improved_sales) -> tuple[int, int]:
+    """(sales whose land value exceeds their price, sales with a land value) over all usable sales."""
+    all_sales = np.concatenate([vacant_sales, improved_sales])
+    if not len(all_sales):
+        return 0, 0
+    s_land = land[sale_parcel[all_sales]]
+    valued = ~np.isnan(s_land)
+    return int((s_land[valued] > price[all_sales][valued]).sum()), int(valued.sum())
+
+
+def _roll_evidence_and_comparison(dataset, evidence, parcels, land, sale_parcel, price, vacant_sales,
+                                  move_threshold) -> RollComparison | None:
+    """Fill each evidence row's roll range and return the roll comparison; None if roll land isn't mapped."""
+    roll = roll_land_values(dataset)
+    if roll is None:
+        return None
+    p_roll = roll[parcels]
+    for e in evidence:
+        e_units = dataset.unit_values(e.unit)[parcels]
+        with np.errstate(invalid="ignore"):
+            ok = (p_roll > 0) & (e_units > 0)
+        e.roll = value_range(p_roll[ok] / e_units[ok])
+    v_parcels = sale_parcel[vacant_sales] if len(vacant_sales) else np.zeros(0, dtype=np.int64)
+    v_price = price[vacant_sales] if len(vacant_sales) else np.zeros(0)
+    return roll_comparison(roll, land, parcels, roll[v_parcels], v_price, move_threshold)
+
+
 def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.ndarray | None = None,
             move_threshold: float = MOVE_THRESHOLD) -> Metrics:
     """Metrics for the parcels in ``parcel_mask`` (and the sales on them).
@@ -292,84 +375,24 @@ def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.
     """
     dataset = session.dataset
     land = session.land_values if land is None else land
-    has_cost = DEPRECIATED_COST in dataset.parcels.columns
-    cost = dataset.float_column(DEPRECIATED_COST) if has_cost else None
+    cost = dataset.float_column(DEPRECIATED_COST) if DEPRECIATED_COST in dataset.parcels.columns else None
+    parcels = np.flatnonzero(parcel_mask)
+    sale_parcel, price, vacant_sales, improved_sales = _sales_arrays(session, parcel_mask)
 
-    # Sales in scope
-    sales = dataset.sales
-    if sales is not None:
-        scope = sales_in_scope(session.sale_flags, sales, parcel_mask)
-        sale_parcel, price = scope.parcel, scope.price
-        vacant_sales, improved_sales = scope.vacant_sales, scope.improved_sales
-    else:
-        sale_parcel = price = None
-        vacant_sales = improved_sales = np.zeros(0, dtype=np.int64)
-
-    # Evidence per unit, and the best unit by precision-weighted spread
     evidence, best_unit, weights = _unit_evidence(dataset, sale_parcel, price, cost, vacant_sales, improved_sales)
     unit = unit or best_unit or LOT
 
-    # Ratio study: vacant sales whose parcel has a land value
-    if len(vacant_sales):
-        v_land = land[sale_parcel[vacant_sales]]
-        valued = ~np.isnan(v_land)
-        ratio = ratio_study(v_land[valued], price[vacant_sales][valued])
-    else:
-        ratio = ratio_study(np.zeros(0), np.zeros(0))
-
-    # CHD (horizontal uniformity): COD of land value per unit across parcels, sales not needed
-    parcels = np.flatnonzero(parcel_mask)
-    units = dataset.unit_values(unit)[parcels]
-    p_land = land[parcels]
-    spread_ok = ~np.isnan(p_land) & (units > 0)
-    chd = cod(p_land[spread_ok] / units[spread_ok])
-
-    # Allocation ratios
-    allocation_table = allocation_vacant = allocation_sales = None
-    if has_cost:
-        p_cost = cost[parcels]
-        built = p_cost > 0
-        with np.errstate(divide="ignore", invalid="ignore"):
-            table_ok = built & ~np.isnan(p_land)
-            allocation_table = _median(p_land[table_ok] / (p_land[table_ok] + p_cost[table_ok]))
-            vacant_units = dataset.unit_values(unit)[sale_parcel[vacant_sales]] if len(vacant_sales) else np.zeros(0)
-            rate_ok = vacant_units > 0
-            if rate_ok.any():
-                rate = np.mean(price[vacant_sales][rate_ok] / vacant_units[rate_ok])
-                implied = rate * units
-                implied_ok = built & ~np.isnan(implied)
-                allocation_vacant = _median(implied[implied_ok] / (implied[implied_ok] + p_cost[implied_ok]))
-            if len(improved_sales):
-                s_cost = cost[sale_parcel[improved_sales]]
-                s_ok = s_cost > 0
-                allocation_sales = _median(1 - s_cost[s_ok] / price[improved_sales][s_ok])
-
-    # Land value in excess of sale price
-    over = checked = 0
-    if sales is not None:
-        all_sales = np.concatenate([vacant_sales, improved_sales])
-        s_land = land[sale_parcel[all_sales]]
-        valued = ~np.isnan(s_land)
-        checked = int(valued.sum())
-        over = int((s_land[valued] > price[all_sales][valued]).sum())
-
-    # Previous roll: per-unit reference ranges, and how far values moved
-    roll = roll_land_values(dataset)
-    comparison = None
-    if roll is not None:
-        p_roll = roll[parcels]
-        for e in evidence:
-            e_units = dataset.unit_values(e.unit)[parcels]
-            with np.errstate(invalid="ignore"):
-                ok = (p_roll > 0) & (e_units > 0)
-            e.roll = value_range(p_roll[ok] / e_units[ok])
-        v_parcels = sale_parcel[vacant_sales] if len(vacant_sales) else np.zeros(0, dtype=np.int64)
-        v_price = price[vacant_sales] if len(vacant_sales) else np.zeros(0)
-        comparison = roll_comparison(roll, land, parcels, roll[v_parcels], v_price, move_threshold)
+    ratio = _vacant_ratio_study(land, sale_parcel, price, vacant_sales)
+    chd, chd_n = _chd(dataset, unit, parcels, land)
+    allocation_table, allocation_vacant, allocation_sales = _allocations(
+        dataset, unit, parcels, land, cost, sale_parcel, price, vacant_sales, improved_sales)
+    over, checked = _over_price(land, sale_parcel, price, vacant_sales, improved_sales)
+    comparison = _roll_evidence_and_comparison(
+        dataset, evidence, parcels, land, sale_parcel, price, vacant_sales, move_threshold)
 
     return Metrics(len(parcels), len(vacant_sales), len(improved_sales), ratio, unit, chd,
                    allocation_table, allocation_vacant, allocation_sales, over, checked, evidence, best_unit,
-                   weights, int(spread_ok.sum()), comparison)
+                   weights, chd_n, comparison)
 
 
 def per_unit_land_evidence(session, parcel_mask: np.ndarray, unit: str) -> np.ndarray:

@@ -153,7 +153,7 @@ def split_check(dataset, app_land: np.ndarray, group_ids: np.ndarray, group_name
     for gid in np.unique(groups):
         in_g = groups == gid
 
-        def median(values):
+        def median(values, in_g=in_g):
             if values is None:
                 return None
             v = values[in_g]

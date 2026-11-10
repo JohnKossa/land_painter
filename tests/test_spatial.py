@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import ROLE_SALES, FileSpec, SalesMapping, parcel_only_config
 from land_painter.data.dataset import build_dataset
@@ -11,8 +12,6 @@ from land_painter.neighborhoods import ROOT
 from land_painter.sales import DISQUALIFIED
 from land_painter.session import Session
 from land_painter.spatial import WINDOW_DAYS, _neighbors, residual_autocorrelation
-
-from test_core import synthetic
 
 N = 64  # 8 x 8 grid, one vacant sale per parcel
 COLS = 8

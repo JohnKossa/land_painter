@@ -80,7 +80,8 @@ def read_parcels(path: str | Path, key_column: str) -> gpd.GeoDataFrame:
     return gdf
 
 
-def triangulate(positions: np.ndarray, starts: np.ndarray, ring_starts: np.ndarray, part_first_ring: np.ndarray) -> np.ndarray:
+def triangulate(positions: np.ndarray, starts: np.ndarray, ring_starts: np.ndarray,
+                part_first_ring: np.ndarray) -> np.ndarray:
     xy = positions.reshape(-1, 2)
     out = []
     for p in range(len(starts) - 1):

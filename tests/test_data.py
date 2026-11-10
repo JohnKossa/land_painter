@@ -1,19 +1,41 @@
 import polars as pl
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import (
-    CATEGORICAL, CONTINUOUS, DEPRECIATED_COST, FILL_MEDIAN, FILL_VALUE, ROLE_ATTRIBUTES, ROLE_PARCELS,
-    ROLE_SALES, ROLL_BUILDING, ROLL_LAND, SALE_PRICE, Cleaning, ColumnRef, FileSpec, ImportConfig, SalesMapping,
-    suggest, suggest_roles, unit_field,
+    CATEGORICAL,
+    CONTINUOUS,
+    DEPRECIATED_COST,
+    FILL_MEDIAN,
+    FILL_VALUE,
+    ROLE_ATTRIBUTES,
+    ROLE_PARCELS,
+    ROLE_SALES,
+    ROLL_BUILDING,
+    ROLL_LAND,
+    SALE_PRICE,
+    Cleaning,
+    ColumnRef,
+    FileSpec,
+    ImportConfig,
+    SalesMapping,
+    suggest,
+    suggest_roles,
+    unit_field,
 )
 from land_painter.data.dataset import build_dataset
 from land_painter.data.review import (
-    ERROR, DataError, clean_numeric, numeric_stats, prepare, profile_characteristics, to_date, to_number,
+    ERROR,
+    DataError,
+    clean_numeric,
+    numeric_stats,
+    prepare,
+    profile_characteristics,
+    to_date,
+    to_number,
     vacant_flags,
 )
 from land_painter.data.sources import inspect
-
-from test_core import synthetic
 
 
 @pytest.fixture
@@ -220,6 +242,6 @@ def test_sessions_saved_before_roll_values_still_load(config):
     (["land_area", "depreciated_cost", "acres"], None, None),
 ])
 def test_roll_value_suggestions(columns, building, land):
-    kinds = {name: "number" for name in columns}
+    kinds = dict.fromkeys(columns, "number")
     assert suggest(ROLL_BUILDING, kinds) == building
     assert suggest(ROLL_LAND, kinds) == land

@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.14"]
 
 [project.scripts]
 land-painter = "land_painter.__main__:main"
@@ -29,3 +29,19 @@ packages = ["src/land_painter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["src/land_painter/map/assets/vendor"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pyupgrade, bugbear, comprehensions, simplify
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = ["B905"]  # zip() strict=: defensive, not a current bug — worth a separate audit
+
+[tool.ruff.lint.flake8-bugbear]
+# Qt's QModelIndex() is the idiomatic, cheap default for model methods.
+extend-immutable-calls = ["PySide6.QtCore.QModelIndex"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E731"]  # test helpers use short lambdas deliberately

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.allocation import amenity_allocation
 from land_painter.data.config import CATEGORICAL, ROLE_SALES, ColumnRef, FileSpec, SalesMapping, parcel_only_config
@@ -8,8 +9,6 @@ from land_painter.data.sources import inspect
 from land_painter.land_table import IN, LOT, MULTIPLY, Adjustment, Condition, FlatRate, LandTable
 from land_painter.neighborhoods import ROOT
 from land_painter.session import Session
-
-from test_core import synthetic
 
 N = 120
 

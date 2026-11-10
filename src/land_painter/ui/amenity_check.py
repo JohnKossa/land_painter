@@ -5,8 +5,21 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QListWidget, QListWidgetItem, QPushButton, QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView,
+    QButtonGroup,
+    QDialog,
+    QDialogButtonBox,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QRadioButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
 )
 
 from ..allocation import AmenityCheck, Premium, amenity_allocation

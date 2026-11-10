@@ -9,9 +9,29 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QCompleter, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
-    QPushButton, QRadioButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QButtonGroup,
+    QComboBox,
+    QCompleter,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..data.config import CONTINUOUS
@@ -489,7 +509,8 @@ class LandTablePanel(QWidget):
         self.adjustments = QTableWidget(0, 3)
         self.adjustments.setHorizontalHeaderLabels(["Applies where", "Effect", "Parcels"])
         self.adjustments.horizontalHeader().setStretchLastSection(False)
-        self.adjustments.horizontalHeader().setSectionResizeMode(0, self.adjustments.horizontalHeader().ResizeMode.Stretch)
+        header = self.adjustments.horizontalHeader()
+        header.setSectionResizeMode(0, header.ResizeMode.Stretch)
         self.adjustments.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.adjustments.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.adjustments.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -686,7 +707,8 @@ class LandTablePanel(QWidget):
         # Guess compares against the table without the adjustment being edited.
         others = tuple(a for i, a in enumerate(self.draft.adjustments) if i != row)
         base = LandTable(self.draft.unit, self.draft.rate, others)
-        dialog = AdjustmentDialog(self.session, self._parcels, self.draft.adjustments[row], base_table=base, parent=self)
+        dialog = AdjustmentDialog(self.session, self._parcels, self.draft.adjustments[row],
+                                  base_table=base, parent=self)
         if dialog.exec():
             adjustments = list(self.draft.adjustments)
             adjustments[row] = dialog.result_adjustment()

@@ -13,6 +13,7 @@ import os
 
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.data.config import ROLE_SALES, ColumnRef, FileSpec, SalesMapping, parcel_only_config
 from land_painter.data.dataset import build_dataset
@@ -21,7 +22,14 @@ from land_painter.neighborhoods import ROOT
 from land_painter.sales import DISQUALIFIED
 from land_painter.session import Session
 
-from test_core import synthetic
+
+def test_session_file_symbols_resolve():
+    """Regression: upload._open_session and session_files lazily import these, so a
+    stripped re-export (e.g. by an autofixer) broke them without failing any import."""
+    from land_painter.app import new_session, open_session, show_window
+    from land_painter.ui.session_files import SESSION_FILTER
+    assert SESSION_FILTER.endswith(".lpsession)")
+    assert all(callable(f) for f in (new_session, open_session, show_window))
 
 
 @pytest.fixture(scope="module")
@@ -80,9 +88,15 @@ def test_mainwindow_smoke(qapp, session):
     parts = np.frombuffer(produce["assignment"](), dtype=session.neighborhoods.assignment.dtype)
     assert parts.max() == child
 
-    # Flagging a sale runs the flag fan-out without error and keeps buffers consistent.
+    # A flag-only change (no flag filter) rebuilds colors but reuses the cached points.
+    pts = produce["sale_points"]()
     w._flag_sales(np.array([0]), DISQUALIFIED)
-    assert len(produce["sale_points"]()) // 24 == len(produce["sale_colors"]()) // 4
+    assert produce["sale_points"]() is pts  # cached: points not rebuilt on a flag-only change
+    assert len(pts) // 24 == len(produce["sale_colors"]()) // 4
+
+    # A change to the shown set of sales does rebuild the points.
+    w.sales_pane.apply_filters()
+    assert produce["sale_points"]() is not pts
 
     # Map focus / zoom / highlight / fly paths run and the focus buffer tracks parcels.
     w._focus_parcels(np.array([0, 1]))

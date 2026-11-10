@@ -12,21 +12,74 @@ import polars as pl
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
-    QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget, QWizard,
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    QWizard,
     QWizardPage,
 )
 
 from ..data.config import (
-    CHARACTERISTIC_KINDS, DEFAULT_UNITS, DEPRECIATED_COST, FILL_MEDIAN, FILL_NONE, FILL_VALUE, FILL_ZERO,
-    MISSING_RULES, NEIGHBORHOOD, REPLACEMENT_COST, ROLL_BUILDING, ROLL_LAND, ROLE_ATTRIBUTES, ROLE_PARCELS, ROLE_SALES, SALE_DATE,
-    SALE_PRICE, SALE_VACANT, Cleaning, ColumnRef, FileSpec, ImportConfig, SalesMapping, suggest,
-    suggest_roles, unit_field,
+    CHARACTERISTIC_KINDS,
+    DEFAULT_UNITS,
+    DEPRECIATED_COST,
+    FILL_MEDIAN,
+    FILL_NONE,
+    FILL_VALUE,
+    FILL_ZERO,
+    MISSING_RULES,
+    NEIGHBORHOOD,
+    REPLACEMENT_COST,
+    ROLE_ATTRIBUTES,
+    ROLE_PARCELS,
+    ROLE_SALES,
+    ROLL_BUILDING,
+    ROLL_LAND,
+    SALE_DATE,
+    SALE_PRICE,
+    SALE_VACANT,
+    Cleaning,
+    ColumnRef,
+    FileSpec,
+    ImportConfig,
+    SalesMapping,
+    suggest,
+    suggest_roles,
+    unit_field,
 )
 from ..data.review import (
-    DATE_FORMATS, ERROR, INFO, WARNING, ColumnProfile, Issue, Prepared, clean_numeric, distinct_values,
-    numeric_stats, parse_dates, prepare, profile_characteristics,
+    DATE_FORMATS,
+    ERROR,
+    INFO,
+    WARNING,
+    ColumnProfile,
+    Issue,
+    Prepared,
+    clean_numeric,
+    distinct_values,
+    numeric_stats,
+    prepare,
+    profile_characteristics,
 )
 from ..data.sources import BOOLEAN, DATE, FILE_FILTER, NUMERIC, TEXT, SourceInfo, inspect, read_columns
 from ..format import number
@@ -221,7 +274,7 @@ class FilesPage(QWizardPage):
         self.completeChanged.emit()
 
     def _open_session(self) -> None:
-        from ..app import SESSION_FILTER
+        from .session_files import SESSION_FILTER
 
         path = QFileDialog.getOpenFileName(self, "Open session", "", SESSION_FILTER)[0]
         if path:
@@ -535,7 +588,7 @@ class ReviewPage(QWizardPage):
     def initializePage(self) -> None:
         config = self._wizard.columns_page.build_config()
         if self.config is not None:  # keep review choices when returning to this page
-            config.cleaning = {k: v for k, v in self.config.cleaning.items()}
+            config.cleaning = dict(self.config.cleaning)
             config.characteristic_kinds = dict(self.config.characteristic_kinds)
             if config.sales and self.config.sales and config.sales.date == self.config.sales.date:
                 config.sales.date_format = self.config.sales.date_format
@@ -732,7 +785,8 @@ class ReviewPage(QWizardPage):
             for kind in CHARACTERISTIC_KINDS:
                 combo.addItem(KIND_LABELS[kind], kind)
             combo.setCurrentIndex(combo.findData(kinds[p.config_key]))
-            combo.currentIndexChanged.connect(lambda _, key=p.config_key, cb=combo: kinds.__setitem__(key, cb.currentData()))
+            combo.currentIndexChanged.connect(
+                lambda _, key=p.config_key, cb=combo: kinds.__setitem__(key, cb.currentData()))
             table.setCellWidget(r, 5, combo)
             note = QTableWidgetItem(p.review or "")
             if p.review:

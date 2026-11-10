@@ -11,8 +11,17 @@ from ..land_table import LOT
 from ..parcels import ParcelLayer, load_parcels
 from .config import CATEGORICAL, CONTINUOUS, FLAG, SALE_PRICE, WHEN, Cleaning, ImportConfig, unit_field
 from .review import (
-    WARNING, DataError, Issue, Prepared, as_text, clean_numeric, distinct_values, numeric_stats, parcel_fields,
-    prepare, to_number,
+    WARNING,
+    DataError,
+    Issue,
+    Prepared,
+    as_text,
+    clean_numeric,
+    distinct_values,
+    numeric_stats,
+    parcel_fields,
+    prepare,
+    to_number,
 )
 from .sources import read_columns
 

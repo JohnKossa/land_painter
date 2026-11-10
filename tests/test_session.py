@@ -2,6 +2,7 @@ import sqlite3
 
 import numpy as np
 import pytest
+from test_core import synthetic
 
 from land_painter.actions import ImportNeighborhoods
 from land_painter.data.config import ColumnRef, parcel_only_config
@@ -9,8 +10,6 @@ from land_painter.data.dataset import build_dataset
 from land_painter.data.sources import inspect
 from land_painter.neighborhoods import ROOT
 from land_painter.session import Session, SessionError, read_config, relocate_inputs
-
-from test_core import synthetic
 
 
 @pytest.fixture
