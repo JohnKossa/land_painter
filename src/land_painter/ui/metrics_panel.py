@@ -9,12 +9,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..format import money, percent, span
 from ..metrics import CHD_MIN_PARCELS, CHD_TARGET, MIN_SALES, Metrics, Range, RatioStudy, RollComparison
 from ..spatial import K, PERMUTATIONS, WINDOW_DAYS, Autocorrelation, SpatialTest
+from .colors import BAD, GOOD, MUTED
 
 UNDEFINED = "Undefined"
 ROLL_COLUMN = 3  # evidence table column for the previous roll's land per unit
-GOOD, BAD = "#98c379", "#e5c07b"
 
 # Acceptable ranges, from the IAAO Standard on Ratio Studies (vacant land COD
 # upper bound; PRD and PRB general guidance). Values outside are highlighted.
@@ -33,17 +34,11 @@ def fmt(value: float | None, digits: int = 2, percent: bool = False) -> str:
     return f"{value * 100:.1f}%" if percent else f"{value:,.{digits}f}"
 
 
-def money(value: float) -> str:
-    return f"−${-value:,.2f}" if value < 0 else f"${value:,.2f}"
-
-
 def range_text(r: Range | None) -> str:
     if r is None:
         return UNDEFINED
-    return f"{money(r.minimum)} ≤ {money(r.mean)} ≤ {money(r.maximum)}  (n={r.n:,})"
-
-
-MUTED = "#888"
+    return (f"{money(r.minimum, decimals=2)} ≤ {money(r.mean, decimals=2)} ≤ "
+            f"{money(r.maximum, decimals=2)}  (n={r.n:,})")
 
 
 def stat_color(name: str, value: float | None) -> str:
@@ -55,7 +50,7 @@ def stat_color(name: str, value: float | None) -> str:
 
 
 def colored(name: str, value: float | None, digits: int) -> str:
-    return f"<span style='color:{stat_color(name, value)}'>{fmt(value, digits)}</span>"
+    return span(fmt(value, digits), stat_color(name, value))
 
 
 # Ratio study table: (RatioStudy attribute, decimals); the attribute is also the TARGETS key
@@ -68,9 +63,9 @@ SIGNIFICANCE = 0.05  # p-value below which spatial clustering is highlighted
 
 def autocorrelation_html(a: Autocorrelation) -> str:
     if a.rho is None:
-        return f"<span style='color:#888'>{UNDEFINED}</span>"
+        return span(UNDEFINED, MUTED)
     color = BAD if a.p_value < SIGNIFICANCE else GOOD
-    return (f"<span style='color:{color}'>ρ {a.rho:.2f}</span> (p {a.p_value:.3f}, null {a.null_mean:.2f}, "
+    return (f"{span(f'ρ {a.rho:.2f}', color)} (p {a.p_value:.3f}, null {a.null_mean:.2f}, "
             f"n={a.n:,})")
 
 
@@ -88,7 +83,7 @@ def ratio_html(study: RatioStudy) -> str:
 
 
 def signed(value: float | None) -> str:
-    return UNDEFINED if value is None else f"{value * 100:+.1f}%"
+    return percent(value, signed=True, blank=UNDEFINED)
 
 
 def roll_change_html(r: RollComparison) -> str:
@@ -126,7 +121,7 @@ class MetricsPanel(QWidget):
             "With roll land value mapped, the previous roll is studied on the same sales, so the two rows compare "
             "head to head. Sales count only where that source has a land value.")
         self.ratio_note = QLabel()
-        self.ratio_note.setStyleSheet("color: #888")
+        self.ratio_note.setStyleSheet(f"color: {MUTED}")
         ratio_box = QGroupBox("Land ratio study (vacant sales)")
         r_layout = QVBoxLayout(ratio_box)
         r_layout.addWidget(self.ratio_table)
@@ -244,7 +239,7 @@ class MetricsPanel(QWidget):
         self.ratio_note.setVisible(not table_unit)
 
         unit = (m.spread_unit or "").lower()
-        few = (f"  <span style='color:{BAD}'>(under {CHD_MIN_PARCELS}, unreliable)</span>"
+        few = (f"  {span(f'(under {CHD_MIN_PARCELS}, unreliable)', BAD)}"
                if m.chd is not None and m.chd_n < CHD_MIN_PARCELS else "")
         self.spread.setText(f"{colored('chd', m.chd, 1)} of land value per {unit or 'unit'} "
                             f"({m.chd_n:,} parcels){few}")
@@ -258,7 +253,7 @@ class MetricsPanel(QWidget):
             self.alloc_sales.setText(f"{fmt(m.allocation_sales, percent=True)} median of improved sales")
         if m.over_price_checked:
             color = BAD if m.over_price else GOOD
-            self.over_price.setText(f"<span style='color:{color}'>{m.over_price:,}</span> of "
+            self.over_price.setText(f"{span(f'{m.over_price:,}', color)} of "
                                     f"{m.over_price_checked:,} sales")
         else:
             self.over_price.setText(UNDEFINED + " (no valued sales)")
@@ -294,7 +289,7 @@ class MetricsPanel(QWidget):
             share = (r.n_up + r.n_down) / r.n_compared
             color = BAD if r.n_up or r.n_down else GOOD
             self.roll_movers.setText(
-                f"<span style='color:{color}'>{r.n_up + r.n_down:,}</span> of {r.n_compared:,} parcels "
+                f"{span(f'{r.n_up + r.n_down:,}', color)} of {r.n_compared:,} parcels "
                 f"({share * 100:.0f}%) moved more than ±{r.threshold * 100:.0f}% · {r.n_up:,} up, {r.n_down:,} down")
         else:
             self.roll_movers.setText(UNDEFINED)

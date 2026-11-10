@@ -15,16 +15,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..data.config import CONTINUOUS
+from ..format import money
 from ..land_table import ADD, IN, LOT, MULTIPLY, OPS, Adjustment, Condition, FlatRate, LandTable, evaluate
 from ..metrics import compute, per_unit_land_evidence
 from ..session import Session
+from .colors import MUTED
 from .metrics_panel import ratio_html, roll_change_html
-
-
-def _money(value: float) -> str:
-    if value is None or np.isnan(value):
-        return "—"
-    return f"−${-value:,.0f}" if value < 0 else f"${value:,.0f}"
 
 
 def summarize(values: np.ndarray) -> str:
@@ -35,7 +31,7 @@ def summarize(values: np.ndarray) -> str:
         return f"{len(values):,} parcels, none valued"
     missing = len(values) - len(valid)
     negative = int((valid < 0).sum())
-    text = f"median {_money(float(np.median(valid)))} · total {_money(float(valid.sum()))}"
+    text = f"median {money(float(np.median(valid)))} · total {money(float(valid.sum()))}"
     if missing:
         text += f" · {missing:,} without a value"
     if negative:
@@ -270,7 +266,7 @@ class AdjustmentDialog(QDialog):
         self.guess.setEnabled(base_table is not None)
         self.guess_info = QLabel()
         self.guess_info.setWordWrap(True)
-        self.guess_info.setStyleSheet("color: #888")
+        self.guess_info.setStyleSheet(f"color: {MUTED}")
 
         form = QFormLayout()
         form.addRow("Name:", self.name)
@@ -348,7 +344,7 @@ class AdjustmentDialog(QDialog):
             return
         m_med, r_med = float(np.median(matched_lv)), float(np.median(rest_lv))
         self.amount.setValue(r_med - m_med)
-        self.guess_info.setText(f"Aligns medians — matched {_money(m_med)} → rest {_money(r_med)} "
+        self.guess_info.setText(f"Aligns medians — matched {money(m_med)} → rest {money(r_med)} "
                                 f"({len(matched_lv):,} vs {len(rest_lv):,} valued parcels)")
 
     def _guess_multiplier(self, land: np.ndarray, units: np.ndarray, matched: np.ndarray) -> None:
@@ -374,8 +370,8 @@ class AdjustmentDialog(QDialog):
             self.guess_info.setText("Market evidence gives a non-positive per-unit value — can't form a multiplier.")
             return
         self.amount.setValue(market_pu / table_pu)
-        self.guess_info.setText(f"Calibrates to market — table {_money(table_pu)}/unit → "
-                                f"market {_money(market_pu)}/unit ({len(market):,} sale observations)")
+        self.guess_info.setText(f"Calibrates to market — table {money(table_pu)}/unit → "
+                                f"market {money(market_pu)}/unit ({len(market):,} sale observations)")
 
     def _accept(self) -> None:
         self.accept()
@@ -411,7 +407,7 @@ class SplitDialog(QDialog):
         intro.setWordWrap(True)
         note = QLabel(SNAPSHOT_NOTE)
         note.setWordWrap(True)
-        note.setStyleSheet("color: #888")
+        note.setStyleSheet(f"color: {MUTED}")
 
         form = QFormLayout()
         form.addRow("Parcels where:", self.picker)

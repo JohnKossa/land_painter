@@ -29,6 +29,8 @@ from ..data.review import (
     numeric_stats, parse_dates, prepare, profile_characteristics,
 )
 from ..data.sources import BOOLEAN, DATE, FILE_FILTER, NUMERIC, TEXT, SourceInfo, inspect, read_columns
+from ..format import number
+from .colors import AMBER, GREEN, MUTED, RED
 from .tasks import run_with_progress
 
 NONE_LABEL = "(none)"
@@ -37,7 +39,7 @@ KIND_LABELS = {"continuous": "Continuous", "categorical": "Categorical", "boolea
                "date": "Date", "unused": "Not used"}
 RULE_LABELS = {"zero": "Zero values", "negative": "Negative values", "placeholder": "Placeholder values",
                "outlier": "Outliers"}
-SEVERITY_COLORS = {ERROR: "#e06c75", WARNING: "#e5c07b", INFO: "#98c379"}
+SEVERITY_COLORS = {ERROR: RED, WARNING: AMBER, INFO: GREEN}
 
 
 def _name(path: str) -> str:
@@ -375,7 +377,7 @@ class ColumnsPage(QWizardPage):
                       "depreciated cost above, so it's only meaningful if that cost is location-free (cost "
                       "book only, no neighborhood or market factor).")
         note.setWordWrap(True)
-        note.setStyleSheet("color: #888")
+        note.setStyleSheet(f"color: {MUTED}")
         form.addRow(note)
         layout.addWidget(roll)
 
@@ -617,10 +619,9 @@ class ReviewPage(QWizardPage):
                 cells[2] = f"{values.drop_nulls().n_unique():,} distinct"
             else:
                 stats = numeric_stats(values, self.prepared.unparseable.get(field_id, 0))
-                fmt = lambda v: "" if v is None else f"{v:,.2f}".rstrip("0").rstrip(".")  # noqa: E731
                 cells.update({4: f"{stats.unparseable:,}", 5: f"{stats.zero:,}", 6: f"{stats.negative:,}",
                               7: f"{stats.placeholder:,}", 8: f"{stats.outlier:,}",
-                              11: fmt(stats.minimum), 12: fmt(stats.median), 13: fmt(stats.maximum)})
+                              11: number(stats.minimum), 12: number(stats.median), 13: number(stats.maximum)})
                 self.fields.setCellWidget(r, 9, self._cleaning_widget(field_id, values, stats, r))
                 self._update_missing_after(r, field_id, values, stats)
             for c, text in cells.items():
@@ -629,7 +630,7 @@ class ReviewPage(QWizardPage):
                     item.setForeground(QBrush(QColor(SEVERITY_COLORS[WARNING])))
                 self.fields.setItem(r, c, item)
             if field_id not in (SALE_DATE, SALE_VACANT, NEIGHBORHOOD) and stats.low_fence is not None:
-                self.fields.item(r, 8).setToolTip(f"Outside {fmt(stats.low_fence)} to {fmt(stats.high_fence)} "
+                self.fields.item(r, 8).setToolTip(f"Outside {number(stats.low_fence)} to {number(stats.high_fence)} "
                                                   "(3 × IQR of log values)")
         self.fields.resizeColumnsToContents()
 

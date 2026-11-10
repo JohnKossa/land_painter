@@ -26,6 +26,7 @@ from ..compare import (
     attributes, bin_parcels, compare, group_parcels, has_descendants, rest_of_parent_selection, selection_for,
 )
 from ..session import Session
+from .colors import MUTED
 
 # Validated reference palette (dataviz skill): categorical slots 1–2, and the blue sequential ramp.
 SERIES = {"light": {PARCELS: "#2a78d6", SALES: "#eb6834"}, "dark": {PARCELS: "#3987e5", SALES: "#d95926"}}
@@ -355,7 +356,8 @@ class ComparePane(QWidget):
         self.session = session
         self._focus_parcels: np.ndarray | None = None  # what the map is showing, if anything
         self.map_selection = 0  # the neighborhood selected on the map
-        self._dirty = True
+        self._dirty = True  # metrics need recomputing
+        self._list_dirty = True  # the neighborhood list needs rebuilding
         self._attributes = attributes(session)
 
         # Neighborhoods
@@ -430,7 +432,7 @@ class ComparePane(QWidget):
 
         self.message = QLabel()
         self.message.setWordWrap(True)
-        self.message.setStyleSheet("color: #888")
+        self.message.setStyleSheet(f"color: {MUTED}")
 
         self.chart = SmallMultiples()
 
@@ -446,7 +448,7 @@ class ComparePane(QWidget):
         self.matrix.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.matrix_title = QLabel("<b>How different?</b> (each cell: the column compared with the row) ⓘ")
         self.matrix_note = QLabel()  # one-line legend; the full explanation is the tooltip
-        self.matrix_note.setStyleSheet("color: #888")
+        self.matrix_note.setStyleSheet(f"color: {MUTED}")
         for table in (self.summary, self.matrix):
             table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustIgnored)
@@ -582,12 +584,18 @@ class ComparePane(QWidget):
 
     def data_changed(self) -> None:
         """Land values, neighborhoods or sale flags changed: refresh now if visible, else when shown."""
-        self._rebuild_list()
-        self._dirty = True
-        self._recompute()
+        if self.isVisible():
+            self._rebuild_list()
+            self._list_dirty = False
+            self._recompute()
+        else:  # defer both the list rebuild and the recompute to the next showEvent
+            self._list_dirty = self._dirty = True
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if self._list_dirty:
+            self._rebuild_list()  # reads the current tree; must run before _recompute reads the checks
+            self._list_dirty = False
         if self._dirty:
             self._recompute()
 

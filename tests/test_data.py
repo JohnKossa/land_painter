@@ -117,6 +117,26 @@ def test_numeric_stats_and_cleaning():
     assert clean_numeric(values, stats, Cleaning()).equals(values)  # nothing changes unless chosen
 
 
+def test_column_caches_are_shared_and_invalidated(config):
+    ds = build_dataset(config)
+    lot = ds.unit_names()[0]
+
+    first = ds.float_column(DEPRECIATED_COST)
+    ones = ds.unit_values(lot)
+    assert ds.float_column(DEPRECIATED_COST) is first  # cached: same array object
+    assert ds.unit_values(lot) is ones
+
+    # An in-place augmentation that changes the underlying column leaves the cache stale...
+    ds.parcels = ds.parcels.with_columns(pl.col(DEPRECIATED_COST) + 1)
+    assert ds.float_column(DEPRECIATED_COST) is first
+
+    # ...until invalidate_caches is called, which every such mutation must do.
+    ds.invalidate_caches()
+    refreshed = ds.float_column(DEPRECIATED_COST)
+    assert refreshed is not first and refreshed[0] == first[0] + 1
+    assert ds.unit_values(lot) is not ones
+
+
 def test_prepare_reports_key_problems(config):
     prepared = prepare(config)
     messages = " | ".join(i.message for i in prepared.issues)

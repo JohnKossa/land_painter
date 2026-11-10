@@ -11,9 +11,10 @@ from PySide6.QtWidgets import (
 
 from ..allocation import AmenityCheck, Premium, amenity_allocation
 from ..data.config import CONTINUOUS
+from ..format import money, percent, span
 from ..land_table import LOT, Adjustment, LandTable
 from ..session import Session
-from .metrics_panel import BAD, GOOD
+from .colors import BAD, GOOD, MUTED
 
 Z95 = 1.96
 EXPLAIN = (
@@ -31,14 +32,8 @@ EXPLAIN = (
     "positive, otherwise linearly.")
 
 
-def _money(value: float | None) -> str:
-    if value is None:
-        return "—"
-    return f"−${-value:,.0f}" if value < 0 else f"${value:,.0f}"
-
-
 def _pct(value: float) -> str:
-    return f"{value * 100:+.1f}%"
+    return percent(value, signed=True)
 
 
 class AmenityCheckDialog(QDialog):
@@ -111,7 +106,7 @@ class AmenityCheckDialog(QDialog):
         self.summary.setToolTip(EXPLAIN)
         help_label = QLabel("ⓘ What to look for (hover)")
         help_label.setToolTip(EXPLAIN)
-        help_label.setStyleSheet("color: #888")
+        help_label.setStyleSheet(f"color: {MUTED}")
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
@@ -160,12 +155,12 @@ class AmenityCheckDialog(QDialog):
                 cells = [name, "—", "—", "—", "—"]
             else:
                 low, high = np.expm1(prem.beta - Z95 * prem.se), np.expm1(prem.beta + Z95 * prem.se)
-                cells = [name, _pct(prem.percent), f"{_pct(low)} to {_pct(high)}", _money(prem.dollars),
-                         _money(prem.median)]
+                cells = [name, _pct(prem.percent), f"{_pct(low)} to {_pct(high)}", money(prem.dollars),
+                         money(prem.median)]
             for c, text in enumerate(cells):
                 self.table.setItem(i, c, QTableWidgetItem(text))
         assessed = r.assessed_dollars
-        last = ["Land + building (assessed)", "", "", _money(assessed), ""]
+        last = ["Land + building (assessed)", "", "", money(assessed), ""]
         for c, text in enumerate(last):
             self.table.setItem(len(rows), c, QTableWidgetItem(text))
 
@@ -174,7 +169,7 @@ class AmenityCheckDialog(QDialog):
         lines = [f"{r.n_sales:,} improved sales ({r.n_amenity:,} with the amenity) across {scope}. "
                  f"Controls: {controls}."]
         if r.problem:
-            lines.append(f"<span style='color:{BAD}'>{r.problem}</span>")
+            lines.append(span(r.problem, BAD))
         else:
             lines += self._reading(r)
         self.summary.setText("<br>".join(lines))
@@ -184,25 +179,26 @@ class AmenityCheckDialog(QDialog):
         out = []
         market = r.market
         if abs(market.t) < Z95:
-            out.append(f"<span style='color:{BAD}'>The market premium isn't distinguishable from 0 with these "
-                       "sales (its range spans 0) — treat the comparison below with caution.</span>")
+            out.append(span("The market premium isn't distinguishable from 0 with these sales (its range "
+                            "spans 0) — treat the comparison below with caution.", BAD))
         share = r.building_share
         if r.building is None:
             out.append("No depreciated cost is mapped, so the building side can't be checked.")
         elif share is None:
-            out.append(f"<span style='color:{BAD}'>Land and building premiums have opposite signs "
-                       f"(land {_money(r.land.dollars)}, building {_money(r.building.dollars)}).</span>")
+            out.append(span(f"Land and building premiums have opposite signs "
+                            f"(land {money(r.land.dollars)}, building {money(r.building.dollars)}).", BAD))
         else:
             color = BAD if share > 0.5 else GOOD
-            out.append(f"Building share of the assessed premium: <span style='color:{color}'>{share * 100:.0f}%"
-                       f"</span>" + (" — location value is likely booked as building." if share > 0.5 else ""))
+            out.append(f"Building share of the assessed premium: {span(f'{share * 100:.0f}%', color)}"
+                       + (" — location value is likely booked as building." if share > 0.5 else ""))
         assessed = r.assessed_dollars
         if assessed is not None and market.dollars != 0:
             same_sign = assessed * market.dollars > 0
             color = GOOD if same_sign and 0.75 <= assessed / market.dollars <= 1.25 else BAD
-            text = (f"Assessed premium {_money(assessed)} vs market {_money(market.dollars)}: "
-                    f"<span style='color:{color}'>")
-            text += (f"{assessed / market.dollars * 100:.0f}% of the market premium</span>" if same_sign
-                     else "opposite sign to the market</span> — the adjustment's direction may be wrong")
+            inner = (f"{assessed / market.dollars * 100:.0f}% of the market premium" if same_sign
+                     else "opposite sign to the market")
+            text = f"Assessed premium {money(assessed)} vs market {money(market.dollars)}: {span(inner, color)}"
+            if not same_sign:
+                text += " — the adjustment's direction may be wrong"
             out.append(text)
         return out

@@ -28,7 +28,7 @@ import numpy as np
 
 from .data.config import DEPRECIATED_COST
 from .land_table import Condition
-from .sales import usable
+from .sales import sales_in_scope
 
 
 @dataclass
@@ -117,13 +117,12 @@ def amenity_allocation(session, condition: Condition, parcel_mask: np.ndarray, c
     if sales is None:
         return AmenityCheck(problem="No sales are loaded.")
     has_cost = DEPRECIATED_COST in dataset.parcels.columns
-    cost = dataset.parcels[DEPRECIATED_COST].cast(float).fill_null(np.nan).to_numpy() if has_cost else None
+    cost = dataset.float_column(DEPRECIATED_COST) if has_cost else None
 
-    parcel = sales["parcel"].to_numpy()
-    price = sales["price"].fill_null(np.nan).to_numpy().astype(float)
-    vacant = sales["vacant"].fill_null(True).to_numpy()
+    scope = sales_in_scope(session.sale_flags, sales, parcel_mask)
+    parcel, price = scope.parcel, scope.price
     with np.errstate(invalid="ignore"):
-        ok = usable(session.sale_flags, sales) & parcel_mask[parcel] & ~vacant & (price > 0) & (land[parcel] > 0)
+        ok = scope.ok & ~scope.vacant & (land[parcel] > 0)
         if has_cost:
             ok &= cost[parcel] > 0
     for values in controls.values():

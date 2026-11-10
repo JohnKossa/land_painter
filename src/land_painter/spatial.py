@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
-from .sales import usable
+from .sales import sales_in_scope
 
 K = 8  # neighbors per sale (fewer if the neighborhood has fewer eligible sales)
 WINDOW_DAYS = 90  # time control: neighbors sold within this many days are excluded
@@ -118,12 +118,11 @@ def residual_autocorrelation(session, parcel_mask: np.ndarray) -> SpatialTest:
     sales = session.dataset.sales
     if sales is None:
         return empty
-    sale_parcel = sales["parcel"].to_numpy()
-    price = sales["price"].fill_null(np.nan).to_numpy().astype(float)
-    vacant = sales["vacant"].fill_null(False).to_numpy()
+    scope = sales_in_scope(session.sale_flags, sales, parcel_mask)
+    sale_parcel, price = scope.parcel, scope.price
     land = session.land_values[sale_parcel]
     with np.errstate(invalid="ignore"):
-        ok = usable(session.sale_flags, sales) & parcel_mask[sale_parcel] & vacant & (price > 0) & (land > 0)
+        ok = scope.ok & scope.vacant & (land > 0)
     chosen = np.flatnonzero(ok)
     if len(chosen) < 2:
         return SpatialTest(len(chosen), 0, empty.all_pairs, empty.time_controlled)

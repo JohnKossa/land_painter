@@ -18,6 +18,7 @@ import polars as pl
 from .data.config import (
     CATEGORICAL, CONTINUOUS, DEPRECIATED_COST, FLAG, NEIGHBORHOOD, REPLACEMENT_COST, ROLL_BUILDING, ROLL_LAND,
 )
+from .format import money, number
 
 Z_FLAG = 2.0        # numeric: |(value - mean) / std| at or above this is flagged as unusual
 RARE_SHARE = 0.10   # categorical: a value held by this share or less of the neighborhood is flagged
@@ -49,14 +50,8 @@ class ParcelDetails:
     sections: list[DetailSection]
 
 
-def _money(value: float | None) -> str:
-    return "—" if value is None or (isinstance(value, float) and np.isnan(value)) else f"${value:,.0f}"
-
-
 def _num(value: float | None) -> str:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return "—"
-    return f"{value:,.2f}".rstrip("0").rstrip(".")
+    return number(value, blank="—")
 
 
 def _pct(share: float) -> str:
@@ -86,7 +81,7 @@ def parcel_details(dataset, land_values: np.ndarray, assignment: np.ndarray, par
     columns = dataset.parcels.columns
 
     def col(name: str) -> np.ndarray:
-        return dataset.parcels[name].cast(pl.Float64).fill_null(np.nan).to_numpy()
+        return dataset.float_column(name)
 
     def numeric_row(label: str, values: np.ndarray, fmt) -> DetailRow:
         v = float(values[parcel])
@@ -124,11 +119,11 @@ def parcel_details(dataset, land_values: np.ndarray, assignment: np.ndarray, par
         return row
 
     valuation = DetailSection("Valuation")
-    valuation.rows.append(numeric_row("Land value", land_values, _money))
+    valuation.rows.append(numeric_row("Land value", land_values, money))
     for name, label in ((REPLACEMENT_COST, "Replacement cost"), (DEPRECIATED_COST, "Depreciated cost"),
                         (ROLL_BUILDING, "Roll building value"), (ROLL_LAND, "Roll land value")):
         if name in columns:
-            valuation.rows.append(numeric_row(label, col(name), _money))
+            valuation.rows.append(numeric_row(label, col(name), money))
 
     units = DetailSection("Units")
     for name in dataset.config.units:

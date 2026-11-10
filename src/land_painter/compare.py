@@ -29,7 +29,7 @@ import numpy as np
 
 from .data.config import CONTINUOUS, DEPRECIATED_COST, ROLL_BUILDING, ROLL_LAND
 from .land_table import LOT
-from .sales import usable
+from .sales import sales_in_scope
 
 PARCELS, SALES, BOTH = "parcels", "sales", "sales vs. parcels"
 POPULATIONS = (PARCELS, SALES, BOTH)
@@ -95,7 +95,7 @@ def attributes(session) -> list[Attribute]:
 
 
 def _column(dataset, name: str) -> np.ndarray:
-    return dataset.parcels[name].cast(float).fill_null(np.nan).to_numpy()
+    return dataset.float_column(name)
 
 
 def parcel_values(session, attr: Attribute) -> np.ndarray:
@@ -125,13 +125,11 @@ def parcel_values(session, attr: Attribute) -> np.ndarray:
 
 def sale_values(session, attr: Attribute) -> tuple[np.ndarray, np.ndarray]:
     """(sale indices, values) for the usable sales; parcel attributes are read off each sale's parcel."""
-    sales = session.dataset.sales
-    parcel = sales["parcel"].to_numpy()
-    price = sales["price"].fill_null(np.nan).to_numpy().astype(float)
-    with np.errstate(invalid="ignore"):
-        ok = usable(session.sale_flags, sales) & (price > 0)
+    scope = sales_in_scope(session.sale_flags, session.dataset.sales)  # county-wide
+    parcel, price = scope.parcel, scope.price
+    ok = scope.ok
     if attr.key == "sale_ratio":
-        ok &= sales["vacant"].fill_null(False).to_numpy()
+        ok = ok & scope.vacant
     index = np.flatnonzero(ok)
     p, pr = parcel[index], price[index]
     if not attr.sale_level:

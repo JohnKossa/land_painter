@@ -30,9 +30,37 @@ class Dataset:
     sales: pl.DataFrame | None  # sales matched to parcels: "parcel" (index), key, price, date, vacant
     issues: list[Issue]
     _characteristics: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _float_columns: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _ones: np.ndarray | None = field(default=None, init=False, repr=False, compare=False)
 
     def neighborhood_codes(self) -> pl.Series | None:
         return self.parcels["neighborhood"] if "neighborhood" in self.parcels.columns else None
+
+    def invalidate_caches(self) -> None:
+        """Drop every cached column array.
+
+        The caches below assume the per-parcel source columns never change after
+        construction. Both ways a Dataset is built (``Session.new`` and
+        ``Session.open``) make a fresh instance, so that holds today. A future
+        feature that augments an *existing* dataset in place — adding columns to
+        ``parcels`` or remapping ``config`` rather than rebuilding — must call
+        this, or ``float_column``/``unit_values``/``characteristic`` would keep
+        returning stale arrays. Add any new column cache here too.
+        """
+        self._characteristics.clear()
+        self._float_columns.clear()
+        self._ones = None
+
+    # --- Parcel columns ---------------------------------------------------------------
+    # Cached numeric arrays are shared, aligned to parcel order. Treat them as
+    # read-only; copy before mutating (as ``compare`` does). See
+    # ``invalidate_caches`` before mutating ``parcels`` in place.
+
+    def float_column(self, name: str) -> np.ndarray:
+        """A parcel column as a float array (NaN where missing), cached by column name."""
+        if name not in self._float_columns:
+            self._float_columns[name] = self.parcels[name].cast(pl.Float64).fill_null(np.nan).to_numpy()
+        return self._float_columns[name]
 
     # --- Units of measure -------------------------------------------------------------
 
@@ -42,9 +70,11 @@ class Dataset:
 
     def unit_values(self, name: str) -> np.ndarray:
         """Quantity of unit ``name`` for every parcel (float, NaN where missing)."""
-        if name == LOT:
-            return np.ones(self.parcels.height)
-        return self.parcels[unit_field(name)].cast(pl.Float64).fill_null(np.nan).to_numpy()
+        if name == LOT:  # every parcel is exactly 1 lot
+            if self._ones is None:
+                self._ones = np.ones(self.parcels.height)
+            return self._ones
+        return self.float_column(unit_field(name))
 
     # --- Characteristics ----------------------------------------------------------------
     # Keyed "path::column" as in ImportConfig.characteristic_kinds. Loaded from the

@@ -19,9 +19,11 @@ from PySide6.QtWidgets import (
     QTableView, QVBoxLayout, QWidget,
 )
 
+from ..format import money, number, ratio
 from ..sales import DISQUALIFIED, FLAG_LABELS, KNOWN_GOOD, UNFLAGGED
+from .colors import GREEN, GREY, RED
 
-FLAG_COLORS = {UNFLAGGED: QColor("#cccccc"), KNOWN_GOOD: QColor("#98c379"), DISQUALIFIED: QColor("#e06c75")}
+FLAG_COLORS = {UNFLAGGED: QColor(GREY), KNOWN_GOOD: QColor(GREEN), DISQUALIFIED: QColor(RED)}
 TYPE_VACANT, TYPE_IMPROVED, TYPE_ALL = "vacant", "improved", "all"
 FLAG_ANY = -1
 
@@ -52,14 +54,18 @@ class SalesTableModel(QAbstractTableModel):
         self.type_known = vacant.is_not_null().to_numpy()
         self._neighborhood_of = neighborhood_of
         self.neighborhood = neighborhood_of(self.parcel)
+        # Full-length (per-sale) caches, indexed by absolute sale index so they
+        # survive filtering/sorting; cleared by refresh() when land values change.
+        self._sale_land_values: np.ndarray | None = None
+        self._ratios: np.ndarray | None = None
 
         self.columns = [
             Column("Flag", lambda s: FLAG_LABELS[int(self.sale_flags[s])], lambda: self.sale_flags),
             Column("Key", lambda s: str(self.keys[s]), lambda: self.keys),
             Column("Date", lambda s: self.date_text[s], lambda: self.dates),
-            Column("Price", lambda s: _money(self.price[s]), lambda: self.price, True),
-            Column("Land value", lambda s: _money(self.sale_land_values()[s]), self.sale_land_values, True),
-            Column("Ratio", lambda s: _ratio(self.ratios()[s]), self.ratios, True),
+            Column("Price", lambda s: money(self.price[s], blank=""), lambda: self.price, True),
+            Column("Land value", lambda s: money(self.sale_land_values()[s], blank=""), self.sale_land_values, True),
+            Column("Ratio", lambda s: ratio(self.ratios()[s]), self.ratios, True),
             Column("Type", self._type_text, lambda: self.vacant),
             Column("Neighborhood", lambda s: self.neighborhood[s], lambda: self.neighborhood),
         ]
@@ -67,8 +73,9 @@ class SalesTableModel(QAbstractTableModel):
             q = np.asarray(quantity, dtype=float)
             per_unit = np.where(self.vacant & (q > 0), self.price / np.where(q > 0, q, 1), np.nan)
             self.columns += [
-                Column(name, lambda s, q=q: _number(q[s]), lambda q=q: q, True),
-                Column(f"$ / {name.lower()}", lambda s, p=per_unit: _money(p[s], 2), lambda p=per_unit: p, True),
+                Column(name, lambda s, q=q: number(q[s]), lambda q=q: q, True),
+                Column(f"$ / {name.lower()}", lambda s, p=per_unit: money(p[s], decimals=2, blank=""),
+                       lambda p=per_unit: p, True),
             ]
         self.flag_column = 0
         self.neighborhood_column = next(i for i, c in enumerate(self.columns) if c.header == "Neighborhood")
@@ -76,11 +83,17 @@ class SalesTableModel(QAbstractTableModel):
         self._sort: tuple[int, Qt.SortOrder] | None = None
 
     def sale_land_values(self) -> np.ndarray:
-        return self.land_values[self.parcel]
+        """Land value of each sale's parcel (cached; cleared by refresh)."""
+        if self._sale_land_values is None:
+            self._sale_land_values = self.land_values[self.parcel]
+        return self._sale_land_values
 
     def ratios(self) -> np.ndarray:
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return self.sale_land_values() / self.price
+        """Land value ÷ price per sale (cached; cleared by refresh)."""
+        if self._ratios is None:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                self._ratios = self.sale_land_values() / self.price
+        return self._ratios
 
     def _type_text(self, sale: int) -> str:
         return ("Vacant" if self.vacant[sale] else "Improved") if self.type_known[sale] else "Unknown"
@@ -152,6 +165,8 @@ class SalesTableModel(QAbstractTableModel):
 
     def refresh(self) -> None:
         """Repaint every cell (after flags or land values change)."""
+        self._sale_land_values = None  # land values may have changed; recompute lazily
+        self._ratios = None
         if len(self.rows):
             self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, self.columnCount() - 1))
 
@@ -160,18 +175,6 @@ class SalesTableModel(QAbstractTableModel):
     def refresh_neighborhoods(self) -> None:
         self.neighborhood = self._neighborhood_of(self.parcel)
         self.refresh()
-
-
-def _ratio(value: float) -> str:
-    return "" if np.isnan(value) or np.isinf(value) else f"{value:.3f}"
-
-
-def _money(value: float, decimals: int = 0) -> str:
-    return "" if np.isnan(value) else f"${value:,.{decimals}f}"
-
-
-def _number(value: float) -> str:
-    return "" if np.isnan(value) else f"{value:,.2f}".rstrip("0").rstrip(".")
 
 
 class SalesPane(QWidget):

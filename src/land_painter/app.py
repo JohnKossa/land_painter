@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QApplication, QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMessageBox, QVBoxLayout, QWidget,
 )
 import numpy as np
-import shapely
 
 from .data.dataset import build_dataset
 from .data.review import DataError
@@ -22,6 +21,7 @@ from .map import MapView
 from .neighborhoods import ROOT
 from .sales import DISQUALIFIED, KNOWN_GOOD, UNFLAGGED
 from .session import SESSION_SUFFIX, Session, SessionError, read_config, relocate_inputs
+from .ui.map_controller import MapController
 from .ui.tasks import run_with_progress
 
 SALE_COLORS = {UNFLAGGED: (240, 240, 240, 255), KNOWN_GOOD: (152, 195, 121, 255), DISQUALIFIED: (224, 108, 117, 255)}
@@ -97,9 +97,6 @@ class MainWindow(QMainWindow):
         self.session = session
         self.layer = session.layer
         self.selected = ROOT
-        self._version = 0
-        self._focus_parts = b""  # per-part focus mask for the map (empty = no focus)
-        self._focus_version = 0
         self._detail_target: tuple[int, int] | None = None  # (parcel, sale) shown in the details panel; sale -1 if none
 
         self.banner = QLabel()
@@ -108,6 +105,8 @@ class MainWindow(QMainWindow):
         self.banner.setToolTip("Highlighted when outside IAAO ranges: median 0.90–1.10, COD ≤ 25 (vacant land), "
                                "PRD 0.98–1.03, PRB −0.05–0.05")
         self.map = MapView()
+        self.map_controller = MapController(self.map, session, _basemap_urls)
+        self.map_controller.provide_sales(self._sale_points, self._sale_colors)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -118,24 +117,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._build_menus()
         self.sales_pane = None
-        self._sales_version = 0
         if session.dataset.sales is not None:
             self._build_sales_pane()
         self._build_neighborhood_popup()
         self._build_compare_pane()
         self._build_parcel_details()
-        self._refresh_metrics()
-
-        handler = self.map.scheme_handler
-        handler.provide("meta", self._meta)
-        handler.provide("positions", lambda: self.layer.positions.tobytes())
-        handler.provide("starts", lambda: self.layer.starts.tobytes())
-        handler.provide("rings", lambda: self.layer.ring_starts.tobytes())
-        handler.provide("indices", lambda: self.layer.indices.tobytes())
-        handler.provide("assignment", self._part_assignment)
-        handler.provide("sale_points", self._sale_points)
-        handler.provide("sale_colors", self._sale_colors)
-        handler.provide("focus", lambda: self._focus_parts)
+        self._refresh_banner()  # panel metrics are computed when the popup is first shown
 
         bridge = self.map.bridge
         bridge.partClicked.connect(self._on_part_clicked)
@@ -259,6 +246,9 @@ class MainWindow(QMainWindow):
         dock.setFloating(True)
         dock.resize(1020, 760)
         dock.hide()
+        # The panel's metrics (and the spatial permutation test) are only computed
+        # while the dock is shown; compute them when it opens. See _refresh_panel_metrics.
+        dock.visibilityChanged.connect(self._popup_visibility)
         view = self._view_menu()
         view.addAction(dock.toggleViewAction())
         self.popup_on_click = QAction("Open Neighborhood on Click", self)
@@ -421,23 +411,44 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Created {name} with {n:,} parcels", 5000)
         self._assignment_changed()
 
-    def _refresh_metrics(self) -> None:
-        """Recompute the banner (county-wide) and the selected neighborhood's metrics."""
+    def _refresh_banner(self) -> None:
+        """The always-visible county-wide ratio study.
+
+        It depends on land values and sale flags, not on the selection, so it is
+        refreshed on value/flag/assignment changes but not on a mere selection.
+        """
         from .metrics import compute
-        from .spatial import residual_autocorrelation
         from .ui.metrics_panel import banner_html
 
         if not hasattr(self, "metrics_panel"):
             return
-        model = self.session.neighborhoods
         everything = np.ones(self.layer.n_parcels, dtype=bool)
         self.banner.setText(banner_html(compute(self.session, everything).ratio))
+
+    def _refresh_panel_metrics(self) -> None:
+        """The selected neighborhood's metrics and spatial test, shown in the popup panel.
+
+        Skipped while the popup is hidden (recomputed when it is shown, via
+        _popup_visibility), since the spatial permutation test is expensive and
+        runs on the UI thread. The popup is floating and hidden by default, so this
+        keeps every map click, flag and edit from paying for metrics nothing shows.
+        """
+        from .metrics import compute
+        from .spatial import residual_autocorrelation
+
+        if not hasattr(self, "metrics_panel") or not self.popup_dock.isVisible():
+            return
+        model = self.session.neighborhoods
         table = model.neighborhoods[self.selected].table
         unit = table.unit if table else None
         mask = model.assignment == self.selected
         metrics = compute(self.session, mask, unit)
         spatial = residual_autocorrelation(self.session, mask)  # selected neighborhood only: not cheap county-wide
         self.metrics_panel.show_metrics(model.neighborhoods[self.selected].name, metrics, unit, spatial)
+
+    def _popup_visibility(self, visible: bool) -> None:
+        if visible:
+            self._refresh_panel_metrics()
 
     def _view_menu(self):
         if not hasattr(self, "_view"):
@@ -460,29 +471,16 @@ class MainWindow(QMainWindow):
         if self.sales_pane is not None:
             self.sales_pane.model.refresh()
         self._compare_data_changed()
-        self._refresh_metrics()
+        self._refresh_banner()
+        self._refresh_panel_metrics()
         self._refresh_parcel_details()
         self._refresh_chrome()
 
     def _focus_parcels(self, parcels) -> None:
-        """Make ``parcels`` stand out on the map and fade the rest; None or empty clears the focus."""
-        if parcels is None or not len(parcels):
-            self._focus_parts = b""
-        else:
-            mask = np.zeros(self.layer.n_parcels, dtype=bool)
-            mask[parcels] = True
-            self._focus_parts = mask[self.layer.part_parcel].astype(np.uint8).tobytes()
-        self._focus_version += 1
-        self.map.bridge.focusChanged.emit(self._focus_version)
+        self.map_controller.focus_parcels(parcels)
 
     def _zoom_to_parcels(self, parcels) -> None:
-        if parcels is None or not len(parcels):
-            return
-        mask = np.zeros(self.layer.n_parcels, dtype=bool)
-        mask[parcels] = True
-        bounds = shapely.bounds(self.layer.parts[mask[self.layer.part_parcel]])
-        self.map.bridge.fitBounds.emit(float(bounds[:, 0].min()), float(bounds[:, 1].min()),
-                                       float(bounds[:, 2].max()), float(bounds[:, 3].max()))
+        self.map_controller.zoom_to_parcels(parcels)
 
     def _compare_data_changed(self) -> None:
         """Land values, neighborhoods or sale flags changed (the Compare tab recomputes only while shown)."""
@@ -602,22 +600,8 @@ class MainWindow(QMainWindow):
             _windows.remove(self)
         event.accept()
 
-    # --- Map data ----------------------------------------------------------------
-
-    def _meta(self) -> bytes:
-        return json.dumps({
-            "n_parcels": self.layer.n_parcels,
-            "bounds": self.layer.bounds,
-            "palette": self.session.neighborhoods.palette(),
-            "basemap": _basemap_urls(),
-        }).encode()
-
-    def _part_assignment(self) -> bytes:
-        return self.session.neighborhoods.assignment[self.layer.part_parcel].tobytes()
-
     def _assignment_changed(self) -> None:
-        self._version += 1
-        self.map.bridge.assignmentChanged.emit(self._version, json.dumps(self.session.neighborhoods.palette()))
+        self.map_controller.refresh_assignment()
         if self.sales_pane is not None:
             self.sales_pane.model.refresh_neighborhoods()
             self._update_sales_neighborhood()
@@ -625,7 +609,8 @@ class MainWindow(QMainWindow):
             self.land_panel.reload()
             self.popup.show_neighborhood(self.selected)
         self._compare_data_changed()
-        self._refresh_metrics()
+        self._refresh_banner()
+        self._refresh_panel_metrics()
         self._refresh_parcel_details()
         self._refresh_chrome()
 
@@ -650,23 +635,23 @@ class MainWindow(QMainWindow):
         return lut[self.session.sale_flags[self.sales_pane.visible_sales()]].tobytes()
 
     def _sales_changed(self) -> None:
-        self._sales_version += 1
-        self.map.bridge.salesChanged.emit(self._sales_version)
+        self.map_controller.refresh_sales()
 
     def _flag_sales(self, sales: np.ndarray, flag: int) -> None:
         if self.session.set_sale_flags(sales, flag):
             self.sales_pane.flags_changed()
             self._sales_changed()
             self._compare_data_changed()
-            self._refresh_metrics()
+            self._refresh_banner()
+            self._refresh_panel_metrics()
             self._refresh_chrome()
 
     def _highlight_sale(self, sale: int) -> None:
-        self.map.bridge.highlightRings.emit(json.dumps(self.layer.parcel_rings(int(self._sale_parcels[sale]))))
+        self.map_controller.highlight_rings(json.dumps(self.layer.parcel_rings(int(self._sale_parcels[sale]))))
 
     def _zoom_to_sale(self, sale: int) -> None:
         lng, lat = self._sale_xy[sale]
-        self.map.bridge.flyTo.emit(float(lng), float(lat), 17.0)
+        self.map_controller.fly_to(float(lng), float(lat), 17.0)
 
     def _on_sale_point_clicked(self, index: int) -> None:
         visible = self.sales_pane.visible_sales()
@@ -700,12 +685,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "compare_pane"):
             self.compare_pane.map_selection = neighborhood
         self.statusBar().showMessage(f"Selected {self.session.neighborhoods.neighborhoods[neighborhood].name}", 5000)
-        self.map.bridge.selectionChanged.emit(neighborhood)
+        self.map_controller.select(neighborhood)
         self._update_sales_neighborhood()
         if hasattr(self, "land_panel"):
             self.land_panel.show_neighborhood(neighborhood)
             self.popup.show_neighborhood(neighborhood)
-        self._refresh_metrics()
+        self._refresh_panel_metrics()  # selection doesn't change the county-wide banner
 
     def lasso(self, coords, mode: str = "create") -> int | None:
         """Shift+drag: create a child of the selected neighborhood from lassoed parcels.

@@ -15,7 +15,7 @@ import numpy as np
 
 from .data.config import DEPRECIATED_COST, ROLL_LAND
 from .land_table import LOT
-from .sales import usable
+from .sales import sales_in_scope
 
 
 # --- Statistics -----------------------------------------------------------------------
@@ -261,7 +261,7 @@ def roll_land_values(dataset) -> np.ndarray | None:
     """The previous roll's land value per parcel (NaN where missing), or None if not mapped."""
     if ROLL_LAND not in dataset.parcels.columns:
         return None
-    return dataset.parcels[ROLL_LAND].cast(float).fill_null(np.nan).to_numpy()
+    return dataset.float_column(ROLL_LAND)
 
 
 def roll_comparison(roll: np.ndarray, land: np.ndarray, parcels: np.ndarray, vacant_land_roll: np.ndarray,
@@ -293,16 +293,14 @@ def compute(session, parcel_mask: np.ndarray, unit: str | None = None, land: np.
     dataset = session.dataset
     land = session.land_values if land is None else land
     has_cost = DEPRECIATED_COST in dataset.parcels.columns
-    cost = dataset.parcels[DEPRECIATED_COST].cast(float).fill_null(np.nan).to_numpy() if has_cost else None
+    cost = dataset.float_column(DEPRECIATED_COST) if has_cost else None
 
     # Sales in scope
     sales = dataset.sales
     if sales is not None:
-        sale_parcel = sales["parcel"].to_numpy()
-        price = sales["price"].fill_null(np.nan).to_numpy().astype(float)
-        ok = usable(session.sale_flags, sales) & parcel_mask[sale_parcel] & (price > 0)
-        vacant = sales["vacant"].fill_null(False).to_numpy()
-        vacant_sales, improved_sales = np.flatnonzero(ok & vacant), np.flatnonzero(ok & ~vacant)
+        scope = sales_in_scope(session.sale_flags, sales, parcel_mask)
+        sale_parcel, price = scope.parcel, scope.price
+        vacant_sales, improved_sales = scope.vacant_sales, scope.improved_sales
     else:
         sale_parcel = price = None
         vacant_sales = improved_sales = np.zeros(0, dtype=np.int64)
@@ -386,21 +384,19 @@ def per_unit_land_evidence(session, parcel_mask: np.ndarray, unit: str) -> np.nd
     sales = dataset.sales
     if sales is None:
         return np.zeros(0)
-    sale_parcel = sales["parcel"].to_numpy()
-    price = sales["price"].fill_null(np.nan).to_numpy().astype(float)
-    ok = usable(session.sale_flags, sales) & parcel_mask[sale_parcel] & (price > 0)
-    vacant = sales["vacant"].fill_null(False).to_numpy()
+    scope = sales_in_scope(session.sale_flags, sales, parcel_mask)
+    sale_parcel, price = scope.parcel, scope.price
     units_all = dataset.unit_values(unit)
     samples = []
-    v = np.flatnonzero(ok & vacant)
+    v = scope.vacant_sales
     if len(v):
         u = units_all[sale_parcel[v]]
         m = u > 0
         samples.append(price[v][m] / u[m])
     if DEPRECIATED_COST in dataset.parcels.columns:
-        i = np.flatnonzero(ok & ~vacant)
+        i = scope.improved_sales
         if len(i):
-            cost = dataset.parcels[DEPRECIATED_COST].cast(float).fill_null(np.nan).to_numpy()
+            cost = dataset.float_column(DEPRECIATED_COST)
             u = units_all[sale_parcel[i]]
             c = cost[sale_parcel[i]]
             m = (u > 0) & ~np.isnan(c)
@@ -413,9 +409,8 @@ def over_price_sales(session, parcel_mask: np.ndarray) -> np.ndarray:
     sales = session.dataset.sales
     if sales is None:
         return np.zeros(0, dtype=np.int64)
-    sale_parcel = sales["parcel"].to_numpy()
-    price = sales["price"].fill_null(np.nan).to_numpy().astype(float)
-    land = session.land_values[sale_parcel]
+    scope = sales_in_scope(session.sale_flags, sales, parcel_mask)
+    land = session.land_values[scope.parcel]
     with np.errstate(invalid="ignore"):
-        hit = usable(session.sale_flags, sales) & parcel_mask[sale_parcel] & (price > 0) & (land > price)
+        hit = scope.ok & (land > scope.price)
     return np.flatnonzero(hit)

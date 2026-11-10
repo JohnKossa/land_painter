@@ -113,7 +113,7 @@ def split_check(dataset, app_land: np.ndarray, group_ids: np.ndarray, group_name
         return result
 
     def column(name: str) -> np.ndarray:
-        return dataset.parcels[name].cast(float).fill_null(np.nan).to_numpy()
+        return dataset.float_column(name)
 
     building, cost = column(ROLL_BUILDING), column(DEPRECIATED_COST)
     roll_land = column(ROLL_LAND) if ROLL_LAND in columns else None

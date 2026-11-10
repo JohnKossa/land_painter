@@ -9,10 +9,11 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
+from ..format import money, span
 from ..land_table import LOT
 from ..session import Session
 from ..split import LARGE, MEDIUM, MIN_GROUP, SplitCheck, Variance, split_check
-from .metrics_panel import BAD, GOOD
+from .colors import BAD, GOOD, MUTED
 
 IMPORTED, APP = "imported", "app"
 LEAKAGE_FLAG = 0.75  # building ω² at least this share of land ω² is highlighted
@@ -33,10 +34,6 @@ EXPLAIN = (
 
 def _num(value: float | None, digits: int = 3) -> str:
     return "—" if value is None else f"{value:.{digits}f}"
-
-
-def _money(value: float | None) -> str:
-    return "—" if value is None else f"${value:,.2f}"
 
 
 class SplitCheckDialog(QDialog):
@@ -74,7 +71,7 @@ class SplitCheckDialog(QDialog):
         self.reading.setTextFormat(Qt.TextFormat.RichText)
         help_label = QLabel("ⓘ What to look for (hover)")
         help_label.setToolTip(EXPLAIN)
-        help_label.setStyleSheet("color: #888")
+        help_label.setStyleSheet(f"color: {MUTED}")
 
         self.groups = QTableWidget(0, 5)
         self.groups.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -133,7 +130,7 @@ class SplitCheckDialog(QDialog):
 
         lines = []
         if r.problem:
-            lines.append(f"<span style='color:{BAD}'>{r.problem}</span>")
+            lines.append(span(r.problem, BAD))
         else:
             lines += self._reading(r, unit)
         self.reading.setText("<br>".join(lines))
@@ -145,8 +142,8 @@ class SplitCheckDialog(QDialog):
         self.groups.setRowCount(len(r.groups))
         for i, g in enumerate(r.groups):
             values = [g.name, g.n, g.building_ratio, g.roll_land_per_unit, g.app_land_per_unit]
-            texts = [g.name, f"{g.n:,}", _num(g.building_ratio), _money(g.roll_land_per_unit),
-                     _money(g.app_land_per_unit)]
+            texts = [g.name, f"{g.n:,}", _num(g.building_ratio), money(g.roll_land_per_unit, decimals=2),
+                     money(g.app_land_per_unit, decimals=2)]
             for c, (value, text) in enumerate(zip(values, texts)):
                 item = (QTableWidgetItem(text) if c == 0  # numbers sort numerically, missing last
                         else _NumericItem(text, -np.inf if value is None else float(value)))
@@ -166,14 +163,14 @@ class SplitCheckDialog(QDialog):
             return out
         level = "large" if b.omega2 >= LARGE else "medium" if b.omega2 >= MEDIUM else "small"
         color = GOOD if b.omega2 < MEDIUM else BAD
-        out.append(f"5a: neighborhood explains <span style='color:{color}'>{b.omega2 * 100:.0f}%</span> "
+        out.append(f"5a: neighborhood explains {span(f'{b.omega2 * 100:.0f}%', color)} "
                    f"(ω²; η² {b.eta2 * 100:.0f}%) of the building ratio's variance — a {level} effect"
                    + (", so location value appears to be booked as building." if b.omega2 >= MEDIUM else "."))
         if r.roll_land is None:
             out.append("5b: needs roll land value mapped (and positive units) to compare.")
         elif r.leakage is not None:
             color = BAD if r.leakage >= LEAKAGE_FLAG else GOOD
-            out.append(f"5b: building ω² is <span style='color:{color}'>{r.leakage:.2f}×</span> land's "
+            out.append(f"5b: building ω² is {span(f'{r.leakage:.2f}×', color)} land's "
                        f"({b.omega2:.2f} vs {r.roll_land.omega2:.2f})"
                        + (" — location is split across land and building." if r.leakage >= LEAKAGE_FLAG
                           else " — location sits mainly in land."))
