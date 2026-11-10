@@ -2,6 +2,8 @@
 name = "land-painter"
 version = "0.1.0"
 requires-python = ">=3.14"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 dependencies = [
     "pyside6>=6.10",
     "numpy>=2.3",

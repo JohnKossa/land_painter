@@ -105,3 +105,22 @@ uv run ruff check .    # lint
 
 Project layout: application code in `src/land_painter/` (domain logic at the top level, UI widgets
 under `ui/`, the map front-end under `map/`), tests in `tests/`.
+
+---
+
+## Acknowledgments
+
+Special thanks to the **Lee County Property Appraiser's office** for their insight, domain
+expertise, and support of this project. Their guidance on assessment practice and real-world
+appraisal workflows shaped the design throughout.
+
+---
+
+## License
+
+Land Painter is licensed under the **GNU Affero General Public License, version 3.0** — see
+[LICENSE](LICENSE) for the full text. In short: you may use, study, modify, and share it freely,
+but any modified version you distribute **or run as a network service** must be offered to its users
+under the same license, with source.
+
+Copyright © 2026 John Kossa
