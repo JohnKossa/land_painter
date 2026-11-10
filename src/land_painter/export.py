@@ -1,25 +1,30 @@
 """Export: parcels tagged with neighborhoods and land values, plus the land tables.
 
-Three tables, written as Parquet or CSV side by side:
+Three files side by side:
 
-* ``<name>``: one row per parcel.
-* ``<name>_land_tables``: one row per (live) neighborhood.
-* ``<name>_adjustments``: one row per land table adjustment.
+* ``<name>``: one row per parcel, in the chosen format. As Parquet it is written
+  as **GeoParquet** (a parcel-geometry column in WGS84), so it opens directly in
+  QGIS and other GIS tools; as CSV it is attributes only (CSV has no native
+  geometry).
+* ``<name>_land_tables.csv``: one row per (live) neighborhood.
+* ``<name>_adjustments.csv``: one row per land table adjustment.
 
-Only applied land tables are exported.
+The two reference tables are always CSV: they have no geometry, and CSV opens
+anywhere (e.g. LibreOffice). Only applied land tables are exported.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import polars as pl
+import shapely
 
 from .land_table import IN, components
 from .neighborhoods import NeighborhoodModel
-
-PARQUET, CSV = "parquet", "csv"
+from .parcels import WGS84
 
 
 def neighborhood_paths(model: NeighborhoodModel) -> list[str]:
@@ -117,23 +122,47 @@ def land_table_tables(session) -> tuple[pl.DataFrame, pl.DataFrame]:
             pl.DataFrame(adjustments, schema=adjustment_schema, orient="row"))
 
 
+def parcel_geometry(layer) -> np.ndarray:
+    """One geometry per parcel (MultiPolygon, WGS84), aligned to ``layer.keys``.
+
+    The layer stores geometry as individual parts with ``part_parcel`` mapping each
+    back to its parcel; this regroups the parts into one geometry per parcel.
+    """
+    return shapely.multipolygons(layer.parts, indices=layer.part_parcel)
+
+
+def _write_parcel_geoparquet(parcels: pl.DataFrame, layer, target: Path) -> None:
+    """Write the parcel table as GeoParquet so it renders directly in GIS tools."""
+    gdf = gpd.GeoDataFrame(parcels.to_pandas(), geometry=parcel_geometry(layer), crs=WGS84)
+    gdf.to_parquet(target)
+
+
 def output_paths(path: str | Path) -> list[Path]:
-    """The three files an export to ``path`` writes."""
+    """The three files an export to ``path`` writes.
+
+    The parcel file keeps ``path``'s extension; the land-table and adjustment
+    reference tables are always CSV (no geometry, and CSV opens everywhere).
+    """
     path = Path(path)
-    return [path, path.with_name(f"{path.stem}_land_tables{path.suffix}"),
-            path.with_name(f"{path.stem}_adjustments{path.suffix}")]
+    return [path, path.with_name(f"{path.stem}_land_tables.csv"),
+            path.with_name(f"{path.stem}_adjustments.csv")]
+
+
+def _write_csv(frame: pl.DataFrame, target: Path) -> None:
+    # Quote text so readers keep keys like "00123" as text rather than numbers.
+    frame.write_csv(target, quote_style="non_numeric")
 
 
 def export(session, path: str | Path) -> list[Path]:
-    """Write parcels, land tables and adjustments; the format follows ``path``'s extension."""
-    targets = output_paths(path)
-    fmt = CSV if targets[0].suffix.lower() == ".csv" else PARQUET
-    frames = [parcel_table(session), *land_table_tables(session)]
-    for frame, target in zip(frames, targets):
-        if fmt == CSV:
-            # Quote text so readers keep keys like "00123" as text rather than numbers.
-            frame.write_csv(target, quote_style="non_numeric")
-        else:
-            frame.write_parquet(target)
+    """Write the parcels (in ``path``'s format) plus the land-table and adjustment CSVs."""
+    parcel_path, land_tables_path, adjustments_path = targets = output_paths(path)
+    parcels = parcel_table(session)
+    land_tables, adjustments = land_table_tables(session)
+    if parcel_path.suffix.lower() == ".csv":
+        _write_csv(parcels, parcel_path)
+    else:
+        _write_parcel_geoparquet(parcels, session.layer, parcel_path)  # GeoParquet: includes geometry
+    _write_csv(land_tables, land_tables_path)
+    _write_csv(adjustments, adjustments_path)
     return targets
 

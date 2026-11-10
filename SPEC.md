@@ -276,12 +276,12 @@ User actions (boundary changes, land table edits, sale flags, reconciliation cho
 
 Export to **Parquet or CSV**: parcel-level data with the neighborhood assignment tagged onto each parcel, along with the land tables.
 
-File → Export writes three files side by side (same format):
-* `<name>`: one row per parcel: key, neighborhood, neighborhood path (e.g. `Everything / North / Lake`), unit of measure, units, rate, base value, combined multiplier, combined addition, land value (`base × multiplier + addition`). Parcels without a land value have empty values.
-* `<name>_land_tables`: one row per neighborhood (deleted ones excluded): neighborhood, path, parent, parcel count, unit of measure, rate model, rate, number of adjustments. Neighborhoods without a land table have an empty rate.
-* `<name>_adjustments`: one row per adjustment: neighborhood, order, name, field and its source file, operator, value or values (`|`-separated), readable condition, effect (multiply/add), amount.
+File → Export writes three files side by side:
+* `<name>`: one row per parcel, in the chosen format: key, neighborhood, neighborhood path (e.g. `Everything / North / Lake`), unit of measure, units, rate, base value, combined multiplier, combined addition, land value (`base × multiplier + addition`). Parcels without a land value have empty values. As Parquet this is written as **GeoParquet** — it includes the parcel geometry (WGS84), so it opens and renders directly in QGIS and other GIS tools; as CSV it is attributes only (CSV has no native geometry).
+* `<name>_land_tables.csv`: one row per neighborhood (deleted ones excluded): neighborhood, path, parent, parcel count, unit of measure, rate model, rate, number of adjustments. Neighborhoods without a land table have an empty rate.
+* `<name>_adjustments.csv`: one row per adjustment: neighborhood, order, name, field and its source file, operator, value or values (`|`-separated), readable condition, effect (multiply/add), amount.
 
-Only applied land tables are exported; the user is warned about unapplied edits. CSV text values are quoted so keys keep leading zeros.
+The two reference tables are **always CSV** (they have no geometry, and CSV opens anywhere, e.g. LibreOffice), regardless of the parcel file's format. Only applied land tables are exported; the user is warned about unapplied edits. CSV text values are quoted so keys keep leading zeros.
 
 ## Intended Workflow
 1. User uploads parcel geometry and CSVs of vacant sales, improved sales, characteristics, and cost values

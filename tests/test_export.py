@@ -76,12 +76,24 @@ def test_land_table_tables(session):
 @pytest.mark.parametrize("suffix", [".parquet", ".csv"])
 def test_export_round_trip(session, tmp_path, suffix):
     written = export(session, tmp_path / f"out{suffix}")
-    assert [p.name for p in written] == [f"out{suffix}", f"out_land_tables{suffix}", f"out_adjustments{suffix}"]
+    # Parcels follow the chosen format; the two reference tables are always CSV.
+    assert [p.name for p in written] == [f"out{suffix}", "out_land_tables.csv", "out_adjustments.csv"]
     assert written == output_paths(tmp_path / f"out{suffix}")
-    read = pl.read_csv if suffix == ".csv" else pl.read_parquet
-    parcels = read(written[0])
+    read_parcels = pl.read_csv if suffix == ".csv" else pl.read_parquet
+    parcels = read_parcels(written[0])
     assert parcels.height == 6 and parcels["land_value"][5] == 1900.0
-    assert read(written[1]).height == 3 and read(written[2]).height == 4
+    assert pl.read_csv(written[1]).height == 3 and pl.read_csv(written[2]).height == 4
+
+
+def test_parquet_is_geoparquet_with_geometry(session, tmp_path):
+    import geopandas as gpd
+
+    written = export(session, tmp_path / "out.parquet")
+    gdf = gpd.read_parquet(written[0])  # fails if it isn't valid GeoParquet
+    assert gdf.crs is not None and gdf.crs.to_epsg() == 4326
+    assert gdf.geometry.notna().all() and (gdf.geom_type.isin(["Polygon", "MultiPolygon"])).all()
+    assert len(gdf) == session.layer.n_parcels
+    assert list(gdf["key"]) == list(session.layer.keys)  # geometry aligns with the attribute rows
 
 
 def test_csv_keeps_keys_as_text(session, tmp_path):
