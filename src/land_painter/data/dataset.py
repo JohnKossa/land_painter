@@ -9,7 +9,7 @@ import polars as pl
 
 from ..land_table import LOT
 from ..parcels import ParcelLayer, load_parcels
-from .config import CATEGORICAL, CONTINUOUS, FLAG, SALE_PRICE, Cleaning, ImportConfig, unit_field
+from .config import CATEGORICAL, CONTINUOUS, FLAG, SALE_PRICE, WHEN, Cleaning, ImportConfig, unit_field
 from .review import (
     WARNING, DataError, Issue, Prepared, as_text, clean_numeric, distinct_values, numeric_stats, parcel_fields,
     prepare, to_number,
@@ -18,6 +18,8 @@ from .sources import read_columns
 
 # Characteristic kinds a land table adjustment can filter on.
 FILTER_KINDS = (CONTINUOUS, CATEGORICAL, FLAG)
+# Characteristic kinds worth showing in the per-parcel detail view (everything but "unused").
+DETAIL_KINDS = (CONTINUOUS, CATEGORICAL, FLAG, WHEN)
 
 
 @dataclass
@@ -74,11 +76,11 @@ class Dataset:
             self._characteristics[key] = array
         return self._characteristics[key]
 
-    def filter_fields(self) -> list[tuple[str, str, str]]:
-        """(key, label, kind) for each characteristic an adjustment can filter on, sorted by label."""
+    def _labeled_fields(self, kinds: tuple[str, ...]) -> list[tuple[str, str, str]]:
+        """(key, label, kind) for each characteristic of one of ``kinds``, sorted by label."""
         files = set(self.config.parcel_level_files())
         fields = [(key, key.split("::", 1)[1], kind) for key, kind in self.config.characteristic_kinds.items()
-                  if kind in FILTER_KINDS and key.split("::", 1)[0] in files]
+                  if kind in kinds and key.split("::", 1)[0] in files]
         counts: dict[str, int] = {}
         for _, label, _ in fields:
             counts[label] = counts.get(label, 0) + 1
@@ -88,6 +90,14 @@ class Dataset:
                 label = f"{label} ({key.split('::', 1)[0].replace(chr(92), '/').rsplit('/', 1)[-1]})"
             named.append((key, label, kind))
         return sorted(named, key=lambda f: f[1].lower())
+
+    def filter_fields(self) -> list[tuple[str, str, str]]:
+        """(key, label, kind) for each characteristic an adjustment can filter on, sorted by label."""
+        return self._labeled_fields(FILTER_KINDS)
+
+    def detail_fields(self) -> list[tuple[str, str, str]]:
+        """(key, label, kind) for each characteristic shown in the per-parcel detail view."""
+        return self._labeled_fields(DETAIL_KINDS)
 
     def distinct_values(self, key: str, limit: int = 10_000) -> list[str]:
         """Values of a (non-continuous) characteristic as text, most common first."""

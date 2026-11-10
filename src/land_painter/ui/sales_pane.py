@@ -178,6 +178,7 @@ class SalesPane(QWidget):
     flagRequested = Signal(object, int)  # sale indices, flag
     saleSelected = Signal(int)  # sale index (the current row)
     saleActivated = Signal(int)  # sale index (double-click: zoom to it)
+    detailsRequested = Signal(int)  # sale index (show its parcel's details)
     visibleChanged = Signal()  # filter changed: the set of visible sales is different
 
     def __init__(self, model: SalesTableModel, parent=None):
@@ -291,12 +292,21 @@ class SalesPane(QWidget):
         if sales.size:
             self.flagRequested.emit(sales, flag)
 
+    def current_sale(self) -> int:
+        """The sale under the current row, or -1 if none."""
+        current = self.table.selectionModel().currentIndex()
+        return int(self.model.rows[current.row()]) if current.isValid() else -1
+
     def _context_menu(self, pos) -> None:
-        if not self.selected_sales().size:
+        sale = self.current_sale()
+        if not self.selected_sales().size and sale < 0:
             return
         menu = QMenu(self)
         for action in self._flag_actions:
             menu.addAction(action)
+        if sale >= 0:
+            menu.addSeparator()
+            menu.addAction("View parcel details", lambda: self.detailsRequested.emit(sale))
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def flags_changed(self) -> None:

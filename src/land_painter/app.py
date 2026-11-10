@@ -100,6 +100,7 @@ class MainWindow(QMainWindow):
         self._version = 0
         self._focus_parts = b""  # per-part focus mask for the map (empty = no focus)
         self._focus_version = 0
+        self._detail_target: tuple[int, int] | None = None  # (parcel, sale) shown in the details panel; sale -1 if none
 
         self.banner = QLabel()
         self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -122,6 +123,7 @@ class MainWindow(QMainWindow):
             self._build_sales_pane()
         self._build_neighborhood_popup()
         self._build_compare_pane()
+        self._build_parcel_details()
         self._refresh_metrics()
 
         handler = self.map.scheme_handler
@@ -197,7 +199,9 @@ class MainWindow(QMainWindow):
         self.sales_pane = pane = SalesPane(model)
         pane.flagRequested.connect(self._flag_sales)
         pane.saleSelected.connect(self._highlight_sale)
+        pane.saleSelected.connect(self._follow_sale_details)
         pane.saleActivated.connect(self._zoom_to_sale)
+        pane.detailsRequested.connect(self._show_sale_details)
         pane.visibleChanged.connect(self._sales_changed)
         pane.show_on_map.toggled.connect(self._sales_changed)
 
@@ -273,6 +277,66 @@ class MainWindow(QMainWindow):
             dock.move(max(screen.left(), x), y)
         dock.show()
         dock.raise_()
+
+    def _build_parcel_details(self) -> None:
+        from .ui.parcel_details_panel import ParcelDetailsPanel
+
+        self.parcel_details_panel = ParcelDetailsPanel()
+        dock = self.parcel_details_dock = QDockWidget("Parcel details", self)
+        dock.setObjectName("parcel_details")
+        dock.setWidget(self.parcel_details_panel)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        dock.setFloating(True)
+        dock.resize(560, 680)
+        dock.hide()
+        # Fill in (or clear) the panel whenever it is shown.
+        dock.visibilityChanged.connect(self._parcel_details_visibility)
+        self._view_menu().addAction(dock.toggleViewAction())
+
+    def _parcel_details_visibility(self, visible: bool) -> None:
+        if visible and self._detail_target is not None:
+            self._render_parcel_details(*self._detail_target)
+        elif visible:
+            self.parcel_details_panel.clear_view()
+
+    def _sale_context(self, sale: int) -> str:
+        model = self.sales_pane.model
+        price, date, kind = model.price[sale], model.date_text[sale], model._type_text(sale)
+        ratio = model.ratios()[sale]
+        bits = [f"Price ${price:,.0f}" if not np.isnan(price) else "Price —"]
+        if date:
+            bits.append(date)
+        bits.append(kind)
+        bits.append(f"Ratio {ratio:.3f}" if np.isfinite(ratio) else "Ratio —")
+        return "<b>Sale</b> · " + " · ".join(bits)
+
+    def _render_parcel_details(self, parcel: int, sale: int = -1) -> None:
+        from .parcel_details import parcel_details
+
+        self._detail_target = (parcel, sale)
+        details = parcel_details(self.session.dataset, self.session.land_values,
+                                 self.session.neighborhoods.assignment, parcel)
+        name = self.session.neighborhoods.neighborhoods[details.neighborhood].name
+        self.parcel_details_panel.show_parcel(details, name, self._sale_context(sale) if sale >= 0 else None)
+
+    def _show_parcel_details(self, parcel: int, sale: int = -1) -> None:
+        self._render_parcel_details(parcel, sale)
+        dock = self.parcel_details_dock
+        dock.show()
+        dock.raise_()
+
+    def _show_sale_details(self, sale: int) -> None:
+        self._show_parcel_details(int(self._sale_parcels[sale]), sale)
+
+    def _follow_sale_details(self, sale: int) -> None:
+        """Track the Sales list selection while the details dock is open."""
+        if self.parcel_details_dock.isVisible():
+            self._show_parcel_details(int(self._sale_parcels[sale]), sale)
+
+    def _refresh_parcel_details(self) -> None:
+        """Recompute the open details panel after values or neighborhoods change (without raising it)."""
+        if self._detail_target is not None and self.parcel_details_dock.isVisible():
+            self._render_parcel_details(*self._detail_target)
 
     def _rename_neighborhood(self, index: int) -> None:
         current = self.session.neighborhoods.neighborhoods[index].name
@@ -397,6 +461,7 @@ class MainWindow(QMainWindow):
             self.sales_pane.model.refresh()
         self._compare_data_changed()
         self._refresh_metrics()
+        self._refresh_parcel_details()
         self._refresh_chrome()
 
     def _focus_parcels(self, parcels) -> None:
@@ -561,6 +626,7 @@ class MainWindow(QMainWindow):
             self.popup.show_neighborhood(self.selected)
         self._compare_data_changed()
         self._refresh_metrics()
+        self._refresh_parcel_details()
         self._refresh_chrome()
 
     def _neighborhood_names(self, parcels: np.ndarray) -> np.ndarray:
@@ -621,6 +687,8 @@ class MainWindow(QMainWindow):
         self._select(int(self.session.neighborhoods.assignment[parcel]))
         if self.popup_on_click.isChecked():
             self._open_popup()
+        if self.parcel_details_dock.isVisible():
+            self._render_parcel_details(parcel)
         value = self.session.land_values[parcel]
         name = self.session.neighborhoods.neighborhoods[self.selected].name
         self.statusBar().showMessage(
