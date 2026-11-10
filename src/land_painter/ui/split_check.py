@@ -30,17 +30,23 @@ IMPORTED, APP = "imported", "app"
 LEAKAGE_FLAG = 0.75  # building ω² at least this share of land ω² is highlighted
 
 EXPLAIN = (
-    "5a — Building ÷ location-free cost: for each improved parcel, roll building value ÷ depreciated cost. "
-    "A building's cost shouldn't depend on where it is, so neighborhood should explain little of this ratio's "
-    "variance. A large share means location value is being booked as building.\n\n"
-    "5b — Leakage: the same measure for roll land value per unit, on the same parcels. If neighborhood "
-    "explains the building ratio about as well as land (or better), location is split across both "
-    "components, and land is under-booked where the building ratio runs high.\n\n"
-    "η² is the share of variance between neighborhoods; it reads high with many small neighborhoods, so ω² "
-    "(adjusted) and the ICC are the fairer numbers. Rough guide (Cohen): 0.01 small, 0.06 medium, 0.14 large.\n\n"
-    f"Neighborhoods with fewer than {MIN_GROUP} improved parcels are left out.\n"
-    "Only meaningful if the mapped depreciated cost is location-free (cost book only). If it already includes "
-    "a neighborhood or market factor, ratios sit near 1 and nothing shows up.")
+    "What this checks: whether the current roll has loaded location value onto buildings instead of land.\n\n"
+    "A building costs about the same to build wherever it stands, so its roll value as a share of its cost "
+    "shouldn't depend much on the neighborhood. When it does — when whole neighborhoods run high — that location "
+    "value has likely been booked as building, which means land is under-valued there.\n\n"
+    "How to read it:\n"
+    "  • The top table scores how strongly the neighborhood explains the building-to-cost ratio. Higher means "
+    "more location value sitting in buildings; it's highlighted once the effect is more than small.\n"
+    "  • Leakage compares that with how strongly the neighborhood explains land value per unit. If location "
+    "explains buildings about as well as land (or better), the land/building split is off.\n"
+    "  • The bottom table lists neighborhoods by building-to-cost ratio, highest first — where land is most "
+    "likely under-booked.\n\n"
+    "The numbers: η² is the share of the variation explained by neighborhood; ω² adjusts it to stay fair when "
+    "there are many small neighborhoods, and the ICC is a related reliability measure. Rough guide: 0.01 small, "
+    "0.06 moderate, 0.14 large.\n\n"
+    "This only means something if the depreciated cost you mapped is location-free — straight from the cost "
+    "manual, with no neighborhood or market factor baked in. If location is already in the cost, every ratio "
+    f"sits near 1 and nothing shows up. Neighborhoods with fewer than {MIN_GROUP} improved parcels are left out.")
 
 
 def _num(value: float | None, digits: int = 3) -> str:
@@ -89,9 +95,9 @@ class SplitCheckDialog(QDialog):
         self.groups.verticalHeader().setVisible(False)
         self.groups.setSortingEnabled(True)
         self.groups.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.groups.setToolTip("Neighborhoods with the highest building ratios are where location value is most "
-                               "likely booked as building (and land most likely under-booked).")
-        groups_box = QGroupBox("By neighborhood (highest building ratio first)")
+        self.groups.setToolTip("Neighborhoods with the highest building-to-cost ratios are where location value "
+                               "is most likely booked as building — and land most likely under-assessed.")
+        groups_box = QGroupBox("Neighborhoods — highest building-to-cost ratio first")
         g_layout = QVBoxLayout(groups_box)
         g_layout.addWidget(self.groups)
 
@@ -127,9 +133,9 @@ class SplitCheckDialog(QDialog):
     def _show(self, r: SplitCheck) -> None:
         unit = "lot" if r.unit == LOT else r.unit.lower()
         rows: list[tuple[str, Variance | None]] = [
-            ("5a  Building ÷ depreciated cost (roll)", r.building),
-            (f"5b  Land per {unit} (roll)", r.roll_land),
-            (f"      Land per {unit} (this session's land tables)", r.app_land),
+            ("Building ÷ cost ratio (roll)", r.building),
+            (f"Land per {unit} (roll)", r.roll_land),
+            (f"Land per {unit} (your land tables)", r.app_land),
         ]
         self.summary_table.setRowCount(len(rows))
         for i, (name, v) in enumerate(rows):
@@ -146,8 +152,8 @@ class SplitCheckDialog(QDialog):
             lines += self._reading(r, unit)
         self.reading.setText("<br>".join(lines))
 
-        headers = ["Neighborhood", "Improved parcels", "Median building ÷ cost", f"Median roll land per {unit}",
-                   f"Median session land per {unit}"]
+        headers = ["Neighborhood", "Improved parcels", "Building ÷ cost (median)", f"Roll land per {unit} (median)",
+                   f"Your land per {unit} (median)"]
         self.groups.setSortingEnabled(False)
         self.groups.setHorizontalHeaderLabels(headers)
         self.groups.setRowCount(len(r.groups))
@@ -163,31 +169,34 @@ class SplitCheckDialog(QDialog):
 
     @staticmethod
     def _reading(r: SplitCheck, unit: str) -> list[str]:
-        out = [f"{r.n_improved:,} improved parcels with a roll building value and depreciated cost; "
-               f"median building ÷ cost {_num(r.median_ratio)}."]
+        out = [f"{r.n_improved:,} improved parcels have both a roll building value and a depreciated cost "
+               f"(the median building value is {_num(r.median_ratio)}× its cost)."]
         if r.excluded_groups:
-            out.append(f"{r.excluded_groups:,} neighborhoods with under {MIN_GROUP} such parcels left out "
+            out.append(f"{r.excluded_groups:,} neighborhoods with fewer than {MIN_GROUP} such parcels were left out "
                        f"({r.excluded_parcels:,} parcels).")
         b = r.building
         if b is None:
-            out.append("The building ratio can't be decomposed (needs 2+ neighborhoods and some variation).")
+            out.append("Not enough data to measure this — it needs at least 2 neighborhoods with some "
+                       "variation in their building-to-cost ratios.")
             return out
-        level = "large" if b.omega2 >= LARGE else "medium" if b.omega2 >= MEDIUM else "small"
+        level = "large" if b.omega2 >= LARGE else "moderate" if b.omega2 >= MEDIUM else "small"
         color = GOOD if b.omega2 < MEDIUM else BAD
-        out.append(f"5a: neighborhood explains {span(f'{b.omega2 * 100:.0f}%', color)} "
-                   f"(ω²; η² {b.eta2 * 100:.0f}%) of the building ratio's variance — a {level} effect"
-                   + (", so location value appears to be booked as building." if b.omega2 >= MEDIUM else "."))
+        verdict = (" Location value is likely being recorded as building, which under-assesses land in some "
+                   "neighborhoods." if b.omega2 >= MEDIUM
+                   else " Location barely shows up in building values, which is what you want.")
+        out.append(f"Neighborhood explains {span(f'{b.omega2 * 100:.0f}%', color)} of the differences in "
+                   f"building-to-cost ratios — a {level} effect (ω² {b.omega2:.2f}, η² {b.eta2:.2f})." + verdict)
         if r.roll_land is None:
-            out.append("5b: needs roll land value mapped (and positive units) to compare.")
+            out.append("Map the roll's land value (with positive units) to also check it against the land side.")
         elif r.leakage is not None:
             color = BAD if r.leakage >= LEAKAGE_FLAG else GOOD
-            out.append(f"5b: building ω² is {span(f'{r.leakage:.2f}×', color)} land's "
-                       f"({b.omega2:.2f} vs {r.roll_land.omega2:.2f})"
-                       + (" — location is split across land and building." if r.leakage >= LEAKAGE_FLAG
-                          else " — location sits mainly in land."))
+            out.append(f"Neighborhood explains building values {span(f'{r.leakage:.2f}×', color)} as strongly as it "
+                       f"explains land values (ω² {b.omega2:.2f} vs {r.roll_land.omega2:.2f})."
+                       + (" Location is split across both, so land is under-booked where building ratios run high."
+                          if r.leakage >= LEAKAGE_FLAG else " Location sits mainly in land, as it should."))
         if b.omega2 >= MEDIUM:
             out.append("The neighborhoods at the top of the table below are where land is most likely "
-                       "under-booked.")
+                       "under-assessed.")
         return out
 
 
