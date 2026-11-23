@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from ..data.config import CONTINUOUS
 from ..format import money
 from ..land_table import ADD, IN, LOT, MULTIPLY, OPS, Adjustment, Condition, FlatRate, LandTable, evaluate
-from ..metrics import compute, per_unit_land_evidence
+from ..metrics import ResidualSignal, compute, per_unit_land_evidence, residual_signal
 from ..session import Session
 from .colors import MUTED
 from .metrics_panel import ratio_html, roll_change_html
@@ -204,6 +204,12 @@ class ConditionPicker(QWidget):
         data = self._session.dataset.characteristic(condition.field)[self._parcels]
         return int(condition.mask(data).sum())
 
+    def set_field(self, key: str) -> None:
+        """Select a field by its characteristic key (leaving the condition for the user to fill in)."""
+        index = next((i for i, (k, _, _) in enumerate(self.fields) if k == key), None)
+        if index is not None:
+            self.field.setCurrentIndex(index)
+
     def load(self, c: Condition) -> None:
         index = next((i for i, (key, _, _) in enumerate(self.fields) if key == c.field), 0)
         self.field.setCurrentIndex(index)
@@ -254,6 +260,60 @@ class ConditionPicker(QWidget):
 # --- Adjustment dialog ------------------------------------------------------------------------
 
 
+class _CandidatesDialog(QDialog):
+    """Candidate fields ranked by how strongly they track the land table's residuals."""
+
+    def __init__(self, signals: list[ResidualSignal], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Rank candidate fields")
+        self.resize(500, 440)
+        self.chosen: str | None = None
+
+        note = QLabel(
+            "Fields ranked by how strongly they track where the land table over- or under-values "
+            "against this neighborhood's sales. A hint for what to adjust next — not proof. Watch the "
+            "sale count (n), and note it measures each field on its own, ignoring overlap between them.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {MUTED}")
+
+        self.table = QTableWidget(len(signals), 4)
+        self.table.setHorizontalHeaderLabels(["Field", "Signal", "Trend", "Sales (n)"])
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setToolTip("Signal: |Spearman ρ| for numeric fields, a rank-based group-difference effect "
+                              "(ε²) for categorical ones — both 0–1, higher means a stronger pattern.")
+        for r, s in enumerate(signals):
+            trend = ("higher → over-valued" if s.direction > 0 else "higher → under-valued") \
+                if s.kind == CONTINUOUS else "varies by group"
+            for c, text in enumerate((s.label, f"{s.strength:.2f}", trend, f"{s.n:,}")):
+                item = QTableWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, s.field)
+                self.table.setItem(r, c, item)
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.cellDoubleClicked.connect(lambda *_: self._use())
+        if signals:
+            self.table.selectRow(0)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Use this field")
+        buttons.accepted.connect(self._use)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(note)
+        layout.addWidget(self.table, 1)
+        layout.addWidget(buttons)
+
+    def _use(self) -> None:
+        row = self.table.currentRow()
+        if row >= 0:
+            self.chosen = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            self.accept()
+
+
 class AdjustmentDialog(QDialog):
     def __init__(self, session: Session, parcels: np.ndarray, adjustment: Adjustment | None = None,
                  base_table: LandTable | None = None, parent=None):
@@ -269,6 +329,11 @@ class AdjustmentDialog(QDialog):
         self.name = QLineEdit()
         self.name.setPlaceholderText("optional, e.g. \"Lake access\"")
         self.picker = ConditionPicker(session, parcels)
+        self.rank = QPushButton("Rank candidate fields…")
+        self.rank.setToolTip("Rank every field by how strongly it tracks where the land table over- or\n"
+                             "under-values against this neighborhood's sales — a hint for what to adjust next.")
+        self.rank.clicked.connect(self._rank_candidates)
+        self.rank.setEnabled(base_table is not None)
         self.multiply = QRadioButton("Multiply the unit-of-measure value by")
         self.add = QRadioButton("Add a fixed amount ($)")
         kind_group = QButtonGroup(self)
@@ -291,6 +356,7 @@ class AdjustmentDialog(QDialog):
         form = QFormLayout()
         form.addRow("Name:", self.name)
         form.addRow("Applies where:", self.picker)
+        form.addRow("", self.rank)
         form.addRow("Effect:", self.multiply)
         form.addRow("", self.add)
         amount_row = QHBoxLayout()
@@ -327,6 +393,20 @@ class AdjustmentDialog(QDialog):
         self._ok.setEnabled(self.picker.complete)
         self.guess.setEnabled(self._base_table is not None and self.picker.available)
         self.guess_info.clear()  # any earlier guess no longer matches this condition
+
+    def _rank_candidates(self) -> None:
+        """Screen every field by how strongly it tracks the table's residuals, and let the
+        user jump to the strongest. A pointer to where to look, not an adjustment."""
+        signals = residual_signal(self._session, self._parcels, self._base_table)
+        if not signals:
+            QMessageBox.information(
+                self, "Rank candidate fields",
+                "Nothing to rank yet — this needs a land table plus enough of the neighborhood's "
+                "sales (with prices) to measure residuals against.")
+            return
+        dialog = _CandidatesDialog(signals, self)
+        if dialog.exec() and dialog.chosen is not None:
+            self.picker.set_field(dialog.chosen)
 
     def _guess(self) -> None:
         """Suggest the amount from the data.

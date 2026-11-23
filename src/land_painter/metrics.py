@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .data.config import DEPRECIATED_COST, ROLL_LAND
-from .land_table import LOT
+from .data.config import CONTINUOUS, DEPRECIATED_COST, ROLL_LAND
+from .land_table import LOT, LandTable, evaluate
 from .sales import sales_in_scope
 
 # --- Statistics -----------------------------------------------------------------------
@@ -437,3 +437,112 @@ def over_price_sales(session, parcel_mask: np.ndarray) -> np.ndarray:
     with np.errstate(invalid="ignore"):
         hit = scope.ok & (land > scope.price)
     return np.flatnonzero(hit)
+
+
+# --- Ranking candidate adjustment fields -----------------------------------------------
+# A screening hint for which adjustment to add next: for each characteristic, how strongly
+# it tracks where the land table over- or under-values relative to the neighborhood's sales
+# (the residual). This is *marginal* association — it does not account for overlap between
+# fields — and is only as reliable as the sale count. It points to a field to look at; the
+# user still chooses the filter and amount.
+
+SIGNAL_MIN_SALES = 3  # fewest residual observations before a field is ranked at all
+
+
+@dataclass
+class ResidualSignal:
+    field: str          # characteristic key ("path::column")
+    label: str
+    kind: str           # CONTINUOUS / CATEGORICAL / FLAG
+    strength: float     # |Spearman ρ| (continuous) or ε² (categorical), both 0..1
+    direction: int      # +1/-1: table over-/under-values as the field rises; 0 for categorical
+    n: int              # residual observations used
+
+
+def _rank(a: np.ndarray) -> np.ndarray:
+    """Average ranks (1-based); ties share their mean rank (like scipy.stats.rankdata)."""
+    order = np.argsort(a, kind="stable")
+    _, inverse, counts = np.unique(a[order], return_inverse=True, return_counts=True)
+    ends = np.cumsum(counts)
+    mean_ranks = (2 * ends - counts + 1) / 2  # mean of the 1-based ranks within each tie group
+    ranks = np.empty(len(a), dtype=float)
+    ranks[order] = mean_ranks[inverse]
+    return ranks
+
+
+def _spearman(x: np.ndarray, y: np.ndarray) -> float | None:
+    """Spearman's rank correlation; None when either side is constant (undefined)."""
+    rx, ry = _rank(x), _rank(y)
+    rx -= rx.mean()
+    ry -= ry.mean()
+    denom = np.sqrt(float((rx * rx).sum()) * float((ry * ry).sum()))
+    return float((rx * ry).sum() / denom) if denom else None
+
+
+def _kruskal_epsilon2(labels: np.ndarray, y: np.ndarray) -> float | None:
+    """Rank-based group-difference effect size (epsilon-squared, 0..1); None with <2 groups."""
+    ranks = _rank(y)
+    groups = [ranks[labels == g] for g in np.unique(labels)]
+    if len(groups) < 2:
+        return None
+    n = len(y)
+    h = 12 / (n * (n + 1)) * sum(float(g.sum()) ** 2 / len(g) for g in groups) - 3 * (n + 1)
+    return max(0.0, h / (n - 1))
+
+
+def residual_signal(session, parcels: np.ndarray, table: LandTable | None) -> list[ResidualSignal]:
+    """Rank candidate fields by how strongly each tracks ``table``'s residuals on the sales.
+
+    Residual is ln(table land value / market land value) per usable sale on ``parcels``
+    (market = vacant price, or improved price − depreciated cost). Returns the fields with
+    a defined statistic, strongest first. Empty when there's no table, no sales, or too few
+    residual observations.
+    """
+    dataset = session.dataset
+    sales = dataset.sales
+    if table is None or sales is None or not len(parcels):
+        return []
+    mask = np.zeros(session.layer.n_parcels, dtype=bool)
+    mask[parcels] = True
+    scope = sales_in_scope(session.sale_flags, sales, mask)
+
+    table_land = np.full(session.layer.n_parcels, np.nan)
+    units = dataset.unit_values(table.unit)[parcels]
+    table_land[parcels] = evaluate(table, units, dataset.characteristic, parcels)
+
+    market = np.full(sales.height, np.nan)
+    market[scope.vacant_sales] = scope.price[scope.vacant_sales]
+    if DEPRECIATED_COST in dataset.parcels.columns:
+        cost = dataset.float_column(DEPRECIATED_COST)
+        improved = scope.improved_sales
+        market[improved] = scope.price[improved] - cost[scope.parcel[improved]]
+
+    tland = table_land[scope.parcel]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        usable = (market > 0) & (tland > 0)
+    residual = np.log(tland[usable] / market[usable])
+    sold = scope.parcel[usable]
+    if len(residual) < SIGNAL_MIN_SALES:
+        return []
+
+    signals: list[ResidualSignal] = []
+    for key, label, kind in dataset.filter_fields():
+        values = dataset.characteristic(key)[sold]
+        if kind == CONTINUOUS:
+            ok = ~np.isnan(values.astype(float))
+            if int(ok.sum()) < SIGNAL_MIN_SALES:
+                continue
+            rho = _spearman(values[ok].astype(float), residual[ok])
+            if rho is None:
+                continue
+            signals.append(ResidualSignal(key, label, kind, abs(rho), int(np.sign(rho)), int(ok.sum())))
+        else:  # categorical / yes-no: rank-based group difference
+            present = np.array([v is not None for v in values])
+            if int(present.sum()) < SIGNAL_MIN_SALES:
+                continue
+            eps2 = _kruskal_epsilon2(values[present].astype(str), residual[present])
+            if eps2 is None:
+                continue
+            signals.append(ResidualSignal(key, label, kind, eps2, 0, int(present.sum())))
+    signals.sort(key=lambda s: s.strength, reverse=True)
+    return signals

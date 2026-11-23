@@ -30,11 +30,46 @@ from PySide6.QtWidgets import (
 
 from ..format import money, number, ratio
 from ..sales import DISQUALIFIED, FLAG_LABELS, KNOWN_GOOD, UNFLAGGED
-from .colors import GREEN, GREY, RED
+from .colors import GREEN, GREY, MUTED, RATIO_MID, RATIO_OVER, RATIO_UNDER, RED, css_hex
 
 FLAG_COLORS = {UNFLAGGED: QColor(GREY), KNOWN_GOOD: QColor(GREEN), DISQUALIFIED: QColor(RED)}
 TYPE_VACANT, TYPE_IMPROVED, TYPE_ALL = "vacant", "improved", "all"
 FLAG_ANY = -1
+COLOR_BY_FLAG, COLOR_BY_RATIO = "flag", "ratio"
+
+
+class RatioLegend(QWidget):
+    """Legend for the sale-ratio map overlay: a diverging bar and the current median."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.bar = QLabel()
+        self.bar.setFixedHeight(10)
+        self.bar.setStyleSheet(
+            "border: 1px solid #555; border-radius: 2px; "
+            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {css_hex(RATIO_UNDER)}, "
+            f"stop:0.5 {css_hex(RATIO_MID)}, stop:1 {css_hex(RATIO_OVER)});")
+        self.under = QLabel("under-valued")
+        self.center = QLabel("…")
+        self.over = QLabel("over-valued")
+        self.center.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.over.setAlignment(Qt.AlignmentFlag.AlignRight)
+        for label in (self.under, self.center, self.over):
+            label.setStyleSheet(f"color: {MUTED};")
+        labels = QHBoxLayout()
+        labels.setContentsMargins(0, 0, 0, 0)
+        labels.addWidget(self.under)
+        labels.addWidget(self.center, 1)
+        labels.addWidget(self.over)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 2)
+        layout.setSpacing(1)
+        layout.addWidget(self.bar)
+        layout.addLayout(labels)
+
+    def set_values(self, center: float | None, n: int) -> None:
+        self.center.setText(f"median ratio {center:.2f} · n={n:,}" if center is not None
+                            else "no sales with a usable land ratio")
 
 
 @dataclass
@@ -192,6 +227,7 @@ class SalesPane(QWidget):
     saleActivated = Signal(int)  # sale index (double-click: zoom to it)
     detailsRequested = Signal(int)  # sale index (show its parcel's details)
     visibleChanged = Signal()  # filter changed: the set of visible sales is different
+    colorModeChanged = Signal()  # the map colour mode (flag vs ratio) changed; recolour the points
 
     def __init__(self, model: SalesTableModel, parent=None):
         super().__init__(parent)
@@ -207,11 +243,19 @@ class SalesPane(QWidget):
         for flag, label in FLAG_LABELS.items():
             self.flag_filter.addItem(label, flag)
         self.in_neighborhood = QCheckBox("Selected neighborhood only")
+        self.color_by = QComboBox()
+        self.color_by.addItem("Flag", COLOR_BY_FLAG)
+        self.color_by.addItem("Ratio", COLOR_BY_RATIO)
+        self.color_by.setToolTip("Colour the sale points on the map by flag, or by land ratio "
+                                 "(land value ÷ market, diverging around the local median)")
         self.show_on_map = QCheckBox("Show on map")
         self.show_on_map.setChecked(True)
+        self.legend = RatioLegend()
+        self.legend.setVisible(False)
         for widget in (self.type_filter, self.flag_filter):
             widget.currentIndexChanged.connect(self.apply_filters)
         self.in_neighborhood.toggled.connect(self.apply_filters)
+        self.color_by.currentIndexChanged.connect(self._color_mode_changed)
 
         self.table = QTableView()
         self.table.setModel(model)
@@ -246,10 +290,13 @@ class SalesPane(QWidget):
         filters.addWidget(self.flag_filter)
         filters.addWidget(self.in_neighborhood)
         filters.addStretch()
+        filters.addWidget(QLabel("Color:"))
+        filters.addWidget(self.color_by)
         filters.addWidget(self.show_on_map)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addLayout(filters)
+        layout.addWidget(self.legend)
         layout.addWidget(self.table, 1)
         layout.addLayout(buttons)
         layout.addWidget(self.summary)
@@ -260,7 +307,7 @@ class SalesPane(QWidget):
     # Filtering ------------------------------------------------------------------------------------
 
     def set_neighborhood_mask(self, mask: np.ndarray | None) -> None:
-        """Per-sale mask of sales in the selected neighborhood (and its descendants)."""
+        """Per-sale mask of sales on parcels directly in the selected neighborhood."""
         self._neighborhood_mask = mask
         if self.in_neighborhood.isChecked():
             self.apply_filters()
@@ -286,6 +333,20 @@ class SalesPane(QWidget):
 
     def visible_sales(self) -> np.ndarray:
         return self.model.rows
+
+    # Map colour mode --------------------------------------------------------------------------
+
+    def color_mode(self) -> str:
+        """COLOR_BY_FLAG or COLOR_BY_RATIO: how the map should colour the sale points."""
+        return self.color_by.currentData()
+
+    def set_ratio_legend(self, center: float | None, n: int) -> None:
+        """Update the ratio legend with the median the overlay is centred on."""
+        self.legend.set_values(center, n)
+
+    def _color_mode_changed(self) -> None:
+        self.legend.setVisible(self.color_mode() == COLOR_BY_RATIO)
+        self.colorModeChanged.emit()
 
     def _update_summary(self) -> None:
         rows = self.model.rows

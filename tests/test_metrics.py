@@ -228,3 +228,43 @@ def test_level_gap_between_groups_counts_against_a_unit():
     same = weighted_log_spread([(np.array([9.0, 10.0, 11.0]), 1.0), (np.array([9.0, 10.0, 11.0]), 1.0)])
     gap = weighted_log_spread([(np.array([9.0, 10.0, 11.0]), 1.0), (np.array([18.0, 20.0, 22.0]), 1.0)])
     assert gap > same
+
+
+# --- Ranking candidate adjustment fields ---------------------------------------------------
+
+def test_residual_signal_ranks_the_driving_field(tmp_path):
+    from land_painter.data.config import CONTINUOUS
+    from land_painter.metrics import residual_signal
+
+    view = np.arange(8, dtype=float)  # 0..7, all distinct
+    gdf = synthetic.make_parcels(8)
+    gdf["view"] = view
+    gdf["noise"] = [3.0, 1.0, 4.0, 1.5, 5.0, 9.0, 2.0, 6.0]  # unrelated to the residual
+    parcels = tmp_path / "parcels.parquet"
+    gdf.to_parquet(parcels)
+    # A vacant sale on every parcel; price rises with view, so a flat $1000 table
+    # increasingly under-values the higher-view parcels.
+    rows = ["key,price,date,vacant"] + [f"P{i},{1000 * (1 + 0.1 * v):.0f},2024-01-01,Y" for i, v in enumerate(view)]
+    sales = tmp_path / "sales.csv"
+    sales.write_text("\n".join(rows) + "\n")
+    config = parcel_only_config(inspect(parcels))
+    p = config.parcel_file
+    config.files.append(FileSpec(str(sales), [ROLE_SALES]))
+    config.sales = SalesMapping("key", "price", "date", "vacant", ["Y"])
+    config.characteristic_kinds = {f"{p}::view": CONTINUOUS, f"{p}::noise": CONTINUOUS}
+    s = Session.new(build_dataset(config))
+    s.set_land_table(ROOT, LandTable(LOT, FlatRate(1000.0)))
+
+    signals = residual_signal(s, np.arange(8), s.neighborhoods.neighborhoods[ROOT].table)
+    by_label = {sig.label: sig for sig in signals}
+    assert "view" in by_label and by_label["view"].n == 8
+    top = signals[0]
+    assert top.label == "view"                       # the driving field ranks first
+    assert top.strength > 0.95 and top.direction == -1  # near-perfect; higher view -> under-valued
+    assert by_label["view"].strength > by_label["noise"].strength
+
+
+def test_residual_signal_needs_a_table_and_sales(session):
+    from land_painter.metrics import residual_signal
+    # No land table set on this session yet -> nothing to measure residuals against.
+    assert residual_signal(session, np.arange(6), None) == []

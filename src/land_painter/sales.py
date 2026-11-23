@@ -70,3 +70,21 @@ def sales_in_scope(flags: np.ndarray, sales: pl.DataFrame,
     if parcel_mask is not None:
         ok = ok & parcel_mask[parcel]
     return SalesInScope(parcel, price, vacant, ok)
+
+
+def sale_land_ratios(land_values: np.ndarray, parcel: np.ndarray, price: np.ndarray, vacant: np.ndarray,
+                     type_known: np.ndarray, cost: np.ndarray) -> np.ndarray:
+    """Per-sale land ratio: land value ÷ the sale's market land value.
+
+    Vacant sales compare the land value against the sale price; improved sales
+    against the land residual (price − depreciated cost), so both groups measure
+    the same thing. NaN where the ratio is undefined: unknown sale type, no land
+    value, a missing cost for an improved sale, or a non-positive denominator.
+    """
+    land = land_values[parcel]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        denom = np.where(vacant, price, price - cost)
+        ratios = land / denom
+        undefined = ~type_known | np.isnan(land) | ~(denom > 0)
+    ratios[undefined] = np.nan
+    return ratios

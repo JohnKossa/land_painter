@@ -22,14 +22,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .data.config import DEPRECIATED_COST
 from .data.dataset import build_dataset
 from .data.review import DataError
 from .data.sources import FILE_FILTER
 from .map import MapView
 from .neighborhoods import ROOT
-from .sales import DISQUALIFIED, KNOWN_GOOD, UNFLAGGED
+from .sales import DISQUALIFIED, KNOWN_GOOD, UNFLAGGED, sale_land_ratios
 from .session import Session, SessionError, read_config, relocate_inputs
+from .ui.colors import ratio_colors
 from .ui.map_controller import MapController, versioned
+from .ui.sales_pane import COLOR_BY_RATIO
 from .ui.session_files import SessionFilesMixin
 from .ui.tasks import run_with_progress
 
@@ -193,6 +196,15 @@ class MainWindow(SessionFilesMixin, QMainWindow):
         parcels = self.session.dataset.parcels
         units = {c.removeprefix("unit:"): parcels[c].to_numpy()[self._sale_parcels]
                  for c in parcels.columns if c.startswith("unit:")}
+        # Static per-sale inputs for the ratio overlay; land value (the numerator)
+        # is read live from the session so the overlay tracks land-table edits.
+        self._sale_price = sales["price"].to_numpy().astype(float)
+        self._sale_vacant = sales["vacant"].fill_null(False).to_numpy()
+        self._sale_type_known = sales["vacant"].is_not_null().to_numpy()
+        if DEPRECIATED_COST in parcels.columns:
+            self._sale_cost = self.session.dataset.float_column(DEPRECIATED_COST)[self._sale_parcels]
+        else:
+            self._sale_cost = np.full(len(self._sale_parcels), np.nan)
         model = SalesTableModel(sales, self.session.sale_flags, self.session.land_values, units,
                                 self._neighborhood_names)
         self.sales_pane = pane = SalesPane(model)
@@ -203,6 +215,7 @@ class MainWindow(SessionFilesMixin, QMainWindow):
         pane.detailsRequested.connect(self._show_sale_details)
         pane.visibleChanged.connect(self._sales_view_changed)
         pane.show_on_map.toggled.connect(self._sales_view_changed)
+        pane.colorModeChanged.connect(self._sales_changed)  # recolour only; the shown set is unchanged
 
         dock = QDockWidget("Sales", self)
         dock.setObjectName("sales")
@@ -482,6 +495,7 @@ class MainWindow(SessionFilesMixin, QMainWindow):
         self.land_panel.reload()
         if self.sales_pane is not None:
             self.sales_pane.model.refresh()
+            self._sales_changed()  # land values changed the ratios, so recolour the overlay
         self._compare_data_changed()
         self._refresh_banner()
         self._refresh_panel_metrics()
@@ -548,8 +562,15 @@ class MainWindow(SessionFilesMixin, QMainWindow):
     def _sale_colors(self) -> bytes:
         if self.sales_pane is None or not self.sales_pane.show_on_map.isChecked():
             return b""
+        visible = self.sales_pane.visible_sales()
+        if self.sales_pane.color_mode() == COLOR_BY_RATIO:
+            ratios = sale_land_ratios(self.session.land_values, self._sale_parcels, self._sale_price,
+                                      self._sale_vacant, self._sale_type_known, self._sale_cost)
+            colors, center, n = ratio_colors(ratios[visible])
+            self.sales_pane.set_ratio_legend(center, n)
+            return colors
         lut = np.array([SALE_COLORS[f] for f in (UNFLAGGED, KNOWN_GOOD, DISQUALIFIED)], dtype=np.uint8)
-        return lut[self.session.sale_flags[self.sales_pane.visible_sales()]].tobytes()
+        return lut[self.session.sale_flags[visible]].tobytes()
 
     def _sales_changed(self) -> None:
         self.map_controller.refresh_sales()
@@ -584,9 +605,13 @@ class MainWindow(SessionFilesMixin, QMainWindow):
     def _update_sales_neighborhood(self) -> None:
         if self.sales_pane is None:
             return
+        # Exact membership (not the subtree): the sales list must match the sales behind
+        # the neighborhood's ratios, which use ``assignment == selected``. Otherwise a
+        # neighborhood with sub-neighborhoods would list their sales too. The Compare pane
+        # still offers an explicit "+ sub-neighborhoods" roll-up for when that's wanted.
         model = self.session.neighborhoods
-        in_subtree = model.subtree_mask(self.selected)[model.assignment[self._sale_parcels]]
-        self.sales_pane.set_neighborhood_mask(in_subtree)
+        in_neighborhood = model.assignment[self._sale_parcels] == self.selected
+        self.sales_pane.set_neighborhood_mask(in_neighborhood)
 
     # --- Interaction -----------------------------------------------------------------
 
